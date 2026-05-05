@@ -10,11 +10,12 @@ Luogu 私信 Windows 系统桌面通知
 ## 仓库文件说明
 ```
 LuoguChatNotify/
-├── LuoguNotifyServer.py     # 通知接收主服务，监听请求、弹出系统通知
-├── LuoguNotifyProxy.py      # 中转转发服务，接收油猴 POST 数据
-├── LuoguChatNotify.user.js  # 油猴脚本，监听洛谷私信 WebSocket 并转发至本地
-├── AutoSetup.bat            # 一键安装配置脚本（管理员运行）
-└── Uninstall.bat            # 一键卸载脚本，停止服务+清理自启+删除程序目录
+└── Source file/
+    ├── LuoguNotifyServer.py     # 通知接收主服务，监听请求、弹出系统通知
+    ├── LuoguNotifyProxy.py      # 中转转发服务，接收油猴 POST 数据
+    ├── LuoguChatNotify.user.js  # 油猴脚本，监听洛谷私信 WebSocket 并转发至本地
+    ├── AutoSetup.bat            # 一键安装配置脚本（管理员运行）
+    └── Uninstall.bat            # 一键卸载脚本，停止服务+清理自启+删除程序目录
 ```
 
 ## 功能特性
