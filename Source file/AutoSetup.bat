@@ -1,19 +1,19 @@
 @echo off
 chcp 936
-title Âå¹ÈÍ¨Öª·þÎñ °²×°³ÌÐò
+title æ´›è°·é€šçŸ¥æœåŠ¡ å®‰è£…ç¨‹åº
 echo ==============================================
-echo         Âå¹ÈÍ¨Öª·þÎñ °²×°³ÌÐò
+echo         æ´›è°·é€šçŸ¥æœåŠ¡ å®‰è£…ç¨‹åº
 echo ==============================================
 echo.
-echo ²Ù×÷ËµÃ÷£º
-echo 1. ½«³ÌÐòÎÄ¼þÒÆ¶¯ÖÁÏµÍ³³ÌÐòÄ¿Â¼
-echo 2. ÇëÊÖ¶¯°²×° LuoguChatNotify.user.js µ½ÓÍºï
-echo 3. ÇëÊÖ¶¯´ò¿ªä¯ÀÀÆ÷µÇÂ¼Âå¹È²¢±£³Ö±êÇ©³£×¤
-echo 4. ³ÌÐò×Ô¶¯ÅäÖÃÒÀÀµÓë¿ª»ú×ÔÆô¶¯
-echo 5. °²×°Íê³Éºó±¾³ÌÐò×Ô¶¯É¾³ý
+echo æ“ä½œè¯´æ˜Žï¼š
+echo 1. å°†ç¨‹åºæ–‡ä»¶ç§»åŠ¨è‡³ç³»ç»Ÿç¨‹åºç›®å½•
+echo 2. è¯·æ‰‹åŠ¨å®‰è£… LuoguChatNotify.user.js åˆ°æ²¹çŒ´
+echo 3. è¯·æ‰‹åŠ¨æ‰“å¼€æµè§ˆå™¨ç™»å½•æ´›è°·å¹¶ä¿æŒæ ‡ç­¾å¸¸é©»
+echo 4. ç¨‹åºè‡ªåŠ¨é…ç½®ä¾èµ–ä¸Žå¼€æœºè‡ªå¯åŠ¨
+echo 5. å®‰è£…å®ŒæˆåŽæœ¬ç¨‹åºè‡ªåŠ¨åˆ é™¤
 echo.
-echo ÇëÒÔ¹ÜÀíÔ±Éí·ÝÔËÐÐ±¾³ÌÐò
-echo °´ÈÎÒâ¼ü¿ªÊ¼Ö´ÐÐ...
+echo è¯·ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œæœ¬ç¨‹åº
+echo æŒ‰ä»»æ„é”®å¼€å§‹æ‰§è¡Œ...
 pause >nul
 echo.
 
@@ -22,36 +22,36 @@ set "CUR_DIR=%~dp0"
 set "SELF=%~nx0"
 
 fltmc >nul 2>nul || (
-    echo ´íÎó£ºÇëÓÒ¼üÑ¡Ôñ¡¾ÒÔ¹ÜÀíÔ±Éí·ÝÔËÐÐ¡¿
+    echo é”™è¯¯ï¼šè¯·å³é”®é€‰æ‹©ã€ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œã€‘
     pause >nul
     exit /b
 )
 
 if not exist "%PROG_DIR%" mkdir "%PROG_DIR%"
 
-echo [1/4] ÒÆ¶¯³ÌÐòÎÄ¼þµ½ÏµÍ³Ä¿Â¼
+echo [1/4] ç§»åŠ¨ç¨‹åºæ–‡ä»¶åˆ°ç³»ç»Ÿç›®å½•
 move /y "%CUR_DIR%LuoguNotifyServer.py" "%PROG_DIR%\" >nul
 move /y "%CUR_DIR%LuoguNotifyProxy.py" "%PROG_DIR%\" >nul
 move /y "%CUR_DIR%Uninstall.bat" "%PROG_DIR%\" >nul
-echo ÎÄ¼þÒÆ¶¯Íê³É
+echo æ–‡ä»¶ç§»åŠ¨å®Œæˆ
 
 echo.
 echo ==============================================
-echo ÇëÊÖ¶¯²Ù×÷£º
-echo 1. °²×°Í¬Ä¿Â¼ÏÂ LuoguChatNotify.user.js µ½ÓÍºï
-echo 2. ´ò¿ªä¯ÀÀÆ÷£¬µÇÂ¼Âå¹È
-echo 3. ±£ÁôÂå¹È±êÇ©²»Òª¹Ø±Õ£¬×îÐ¡»¯ºóÌ¨¹Ò×Å¼´¿É½ÓÊÕÍ¨Öª
+echo è¯·æ‰‹åŠ¨æ“ä½œï¼š
+echo 1. å®‰è£…åŒç›®å½•ä¸‹ LuoguChatNotify.user.js åˆ°æ²¹çŒ´
+echo 2. æ‰“å¼€æµè§ˆå™¨ï¼Œç™»å½•æ´›è°·
+echo 3. ä¿ç•™æ´›è°·æ ‡ç­¾ä¸è¦å…³é—­ï¼Œæœ€å°åŒ–åŽå°æŒ‚ç€å³å¯æŽ¥æ”¶é€šçŸ¥
 echo ==============================================
 echo.
-echo °´ÈÎÒâ¼ü¼ÌÐøºóÐøÅäÖÃ...
+echo æŒ‰ä»»æ„é”®ç»§ç»­åŽç»­é…ç½®...
 pause >nul
 echo.
 
-echo [2/4] ¼ì²â²¢°²×°PythonÒÀÀµ¿â
+echo [2/4] æ£€æµ‹å¹¶å®‰è£…Pythonä¾èµ–åº“
 pip install flask win10toast >nul 2>nul
-echo ÒÀÀµ¿â°²×°Íê³É
+echo ä¾èµ–åº“å®‰è£…å®Œæˆ
 
-echo [3/4] ÅäÖÃ¿ª»ú×ÔÆô¶¯Ïî
+echo [3/4] é…ç½®å¼€æœºè‡ªå¯åŠ¨é¡¹
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 
 echo Set oWS = WScript.CreateObject("WScript.Shell") > "%TEMP%\Short1.vbs"
@@ -73,20 +73,20 @@ echo oLink.WorkingDirectory = "%PROG_DIR%" >> "%TEMP%\Short2.vbs"
 echo oLink.Save >> "%TEMP%\Short2.vbs"
 cscript /nologo "%TEMP%\Short2.vbs"
 del "%TEMP%\Short2.vbs"
-echo ¿ª»ú×ÔÆô¶¯ÅäÖÃÍê³É
+echo å¼€æœºè‡ªå¯åŠ¨é…ç½®å®Œæˆ
 
-echo [4/4] Æô¶¯ºóÌ¨·þÎñ
+echo [4/4] å¯åŠ¨åŽå°æœåŠ¡
 start /B pythonw "%PROG_DIR%\LuoguNotifyServer.py"
 timeout /t 1 /nobreak >nul
 start /B pythonw "%PROG_DIR%\LuoguNotifyProxy.py"
 
 echo.
 echo ==============================================
-echo °²×°ÅäÖÃÈ«²¿Íê³É
-echo ³ÌÐòÄ¿Â¼£º%PROG_DIR%
-echo ·þÎñÒÑºóÌ¨¾²Ä¬ÔËÐÐ
-echo Çë×ÔÐÐ±£³ÖÂå¹ÈÍøÒ³±êÇ©³£×¤ºóÌ¨
-echo ±¾°²×°³ÌÐò¼´½«×Ô¶¯É¾³ý
+echo å®‰è£…é…ç½®å…¨éƒ¨å®Œæˆ
+echo ç¨‹åºç›®å½•ï¼š%PROG_DIR%
+echo æœåŠ¡å·²åŽå°é™é»˜è¿è¡Œ
+echo è¯·è‡ªè¡Œä¿æŒæ´›è°·ç½‘é¡µæ ‡ç­¾å¸¸é©»åŽå°
+echo æœ¬å®‰è£…ç¨‹åºå³å°†è‡ªåŠ¨åˆ é™¤
 echo ==============================================
 timeout /t 2 /nobreak >nul
 
