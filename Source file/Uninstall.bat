@@ -1,28 +1,28 @@
 @echo off
 chcp 936
-title Âå¹ÈÍ¨Öª·þÎñ Ð¶ÔØ³ÌÐò
+title æ´›è°·é€šçŸ¥æœåŠ¡ å¸è½½ç¨‹åº
 echo ==============================================
-echo         Âå¹ÈÍ¨Öª·þÎñ Ð¶ÔØ³ÌÐò
+echo         æ´›è°·é€šçŸ¥æœåŠ¡ å¸è½½ç¨‹åº
 echo ==============================================
 echo.
-echo ¼´½«Í£Ö¹·þÎñ¡¢È¡Ïû×ÔÆô¡¢É¾³ý³ÌÐòÄ¿Â¼
-echo °´ÈÎÒâ¼ü¼ÌÐø...
+echo å³å°†åœæ­¢æœåŠ¡ã€å–æ¶ˆè‡ªå¯ã€åˆ é™¤ç¨‹åºç›®å½•
+echo æŒ‰ä»»æ„é”®ç»§ç»­...
 pause >nul
 
 set "PROG_DIR=C:\Program Files\LuoguNotify"
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 
-echo [1/3] Í£Ö¹·þÎñ...
+echo [1/3] åœæ­¢æœåŠ¡...
 taskkill /f /im pythonw.exe >nul 2>nul
 
-echo [2/3] É¾³ý×ÔÆô¶¯Ïî...
+echo [2/3] åˆ é™¤è‡ªå¯åŠ¨é¡¹...
 del "%STARTUP%\LuoguNotifyServer.lnk" >nul 2>nul
 del "%STARTUP%\LuoguNotifyProxy.lnk" >nul 2>nul
 
-echo [3/3] É¾³ý³ÌÐòÄ¿Â¼...
+echo [3/3] åˆ é™¤ç¨‹åºç›®å½•...
 rmdir /s /q "%PROG_DIR%" >nul 2>nul
 
 echo.
-echo Ð¶ÔØÍê³É£¡
-echo °´ÈÎÒâ¼üÍË³ö...
+echo å¸è½½å®Œæˆï¼
+echo æŒ‰ä»»æ„é”®é€€å‡º...
 pause >nul
