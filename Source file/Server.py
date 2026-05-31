@@ -20,6 +20,7 @@ import random
 import json
 import sys
 import getpass
+from datetime import datetime
 
 
 # ==============================================
@@ -38,6 +39,8 @@ class Config:
     COOKIE_SAVE_PATH = "luogu_cookies.json"
     # 默认访问地址
     DEFAULT_VIEW_URL = "https://www.luogu.com.cn/user/1432496"
+    # 犇犇API
+    FEED_WATCHING_URL = "https://www.luogu.com.cn/feed/watching"
     # 验证码最大重试次数
     MAX_CAPTCHA_RETRY = 3
     # 密码环境变量名称（用于 CLI 模式安全输入）
@@ -232,39 +235,7 @@ def luogu_login(user: str, pwd: str) -> dict:
 
 
 # ==============================================
-# 【模块7：页面访问】
-# ==============================================
-def view_page(url: str = None) -> dict:
-    """
-    访问洛谷页面（需要已登录）
-
-    参数：
-        url: 目标 URL，留空使用默认地址
-
-    返回：
-        {"code": 200, "msg": "访问成功", "url": "...", "html": "..."}  或
-        {"code": 401, "msg": "未登录"} / {"code": 500, "msg": "错误"}
-    """
-    session = load_cookie()
-    if not session:
-        return {"code": 401, "msg": "未登录，请先执行 login"}
-
-    target = url or Config.DEFAULT_VIEW_URL
-    try:
-        resp = session.get(target, headers=Headers.BASE, timeout=10)
-        resp.raise_for_status()
-        return {
-            "code": 200,
-            "msg": "访问成功",
-            "url": target,
-            "html": resp.text,
-        }
-    except Exception as e:
-        return {"code": 500, "msg": f"访问失败：{str(e)}"}
-
-
-# ==============================================
-# 【模块8：HTML 解析工具】
+# 【模块7：HTML 解析工具 + JSON 数据提取】
 # ==============================================
 
 def _strip_html(html_content: str) -> str:
@@ -272,110 +243,114 @@ def _strip_html(html_content: str) -> str:
     return re.sub(r'<[^>]+>', '', html_content).strip()
 
 
-def _extract_href(html_content: str) -> str | None:
-    """从 HTML 中提取 href 链接"""
-    m = re.search(r'href="(.*?)"', html_content)
-    return m.group(1) if m else None
-
-
-def _extract_info_rows(html: str) -> list[tuple[str, dict]]:
+def _extract_lentille_json(html: str) -> dict | None:
     """
-    提取页面中所有 l-flex-info-row 信息行
-
-    返回：[(标签, {text, href}), ...]
+    从页面HTML中提取 lentille-context JSON 数据
+    （洛谷使用 Vue SPA，数据通过此 script 标签嵌入）
     """
-    pattern = re.compile(
-        r'<div class="l-flex-info-row"><span>(.*?)</span><div class="right">(.*?)</div></div>',
-        re.DOTALL,
+    m = re.search(
+        r'<script id="lentille-context"[^>]*type="application/json">(.*?)</script>',
+        html, re.DOTALL,
     )
-    rows = []
-    for label, value_html in pattern.findall(html):
-        text = _strip_html(value_html)
-        href = _extract_href(value_html)
-        rows.append((label.strip(), {"text": text, "href": href}))
-    return rows
-
-
-def _extract_stat_pairs(html: str) -> dict[str, str]:
-    """
-    提取页面中 stat-text 统计对（关注/粉丝/提交/通过/排名/等级分）
-
-    返回：{"关注": "8", "粉丝": "12", ...}
-    """
-    pattern = re.compile(
-        r'<span[^>]*class="stat-text name"[^>]*>(.*?)</span>'
-        r'\s*<span[^>]*class="stat-text value"[^>]*>(.*?)</span>'
-    )
-    result = {}
-    for name, value in pattern.findall(html):
-        result[name.strip()] = value.strip()
-    return result
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except (json.JSONDecodeError, ValueError):
+            return None
+    return None
 
 
 def parse_user_profile(html: str) -> dict:
     """
-    解析用户资料页 HTML，提取结构化数据
+    从 lentille-context JSON 解析用户资料结构化数据
 
     返回：
         {
-            "stats": {"关注": "8", "粉丝": "12", ...},
-            "basic_info": {"用户编号": "...", "用户类型": "...", "注册时间": "..."},
-            "guzhi": {"基础信用": "100", "练习情况": "62", ...},
-            "contest_rating": {"等级分": "1007", "评定比赛": "...", ...},
+            "stats": {"关注": "8", "粉丝": "12", "提交": "707", ...},
+            "basic_info": {"用户编号": {"text": "1432496"}, "用户类型": {"text": "..."}, ...},
+            "guzhi": {"基础信用": {"text": "100"}, ...},
+            "contest_rating": {"等级分": {"text": "1007"}, "评定比赛": {"text": "..."}, ...},
         }
     """
+    ctx = _extract_lentille_json(html)
+    if not ctx:
+        return {}
+
     result = {}
+    d = ctx.get("data", {})
+    user = d.get("user", {})
 
-    # 1) 头部统计数据（关注/粉丝/提交/通过/排名/等级分）
-    result["stats"] = _extract_stat_pairs(html)
+    # ── 1) 统计数据 ──
+    stats = {}
+    stats["关注"] = str(user.get("followingCount", 0))
+    stats["粉丝"] = str(user.get("followerCount", 0))
+    stats["提交"] = str(user.get("submittedProblemCount", 0))
+    stats["通过"] = str(user.get("passedProblemCount", 0))
 
-    # 2) 信息行解析（按卡片顺序分类）
-    rows = _extract_info_rows(html)
+    ranking = user.get("ranking", 0)
+    if ranking >= 1000:
+        stats["排名"] = f"{ranking / 1000:.2f}k"
+    else:
+        stats["排名"] = str(ranking)
 
-    basic_info = {}
-    guzhi = {}
-    contest_rating = {}
-    current_section = "basic_info"  # basic_info → guzhi → contest_rating
+    # 等级分取最新 elo
+    elo_list = d.get("elo", [])
+    if elo_list:
+        latest_elo = elo_list[0]
+        stats["等级分"] = str(latest_elo.get("rating", 0))
+    result["stats"] = stats
 
-    # 已知的 guzhi 字段（用于检测 section 切换）
-    GUZHI_FIELDS = {"基础信用", "练习情况", "社区贡献", "比赛情况", "获得成就", "总咕值"}
+    # ── 2) 基本信息 ──
+    basic = {}
+    basic["用户编号"] = {"text": str(user.get("uid", ""))}
+    basic["用户类型"] = {
+        "text": "管理员" if user.get("isAdmin")
+                else "封禁用户" if user.get("isBanned")
+                else "普通用户",
+    }
+    reg_ts = user.get("registerTime", 0)
+    if reg_ts:
+        dt = datetime.fromtimestamp(reg_ts)
+        basic["注册时间"] = {"text": dt.strftime("%Y-%m-%d")}
+    result["basic_info"] = basic
 
-    for label, info in rows:
-        if label in GUZHI_FIELDS:
-            current_section = "guzhi"
-            guzhi[label] = info
-        elif label == "达成时间":
-            # "达成时间" 同时出现在 咕值 和 比赛等级分 中
-            if current_section == "guzhi":
-                guzhi[label] = info
-                current_section = "contest_rating"
-            else:
-                contest_rating[label] = info
-        elif label in ("用户编号", "用户类型", "注册时间"):
-            basic_info[label] = info
-        elif label == "等级分":
-            contest_rating[label] = info
-        elif label == "评定比赛":
-            contest_rating[label] = info
-        else:
-            # 未知字段，归入当前 section
-            if current_section == "basic_info":
-                basic_info[label] = info
-            elif current_section == "guzhi":
-                guzhi[label] = info
-            else:
-                contest_rating[label] = info
-
-    if basic_info:
-        result["basic_info"] = basic_info
-    if guzhi:
+    # ── 3) 咕值 ──
+    gu = d.get("gu", {})
+    scores = gu.get("scores", {})
+    if scores:
+        guzhi = {}
+        label_map = {
+            "basic": "基础信用", "practice": "练习情况",
+            "social": "社区贡献", "contest": "比赛情况",
+            "prize": "获得成就", "rating": "总咕值",
+        }
+        for key, label in label_map.items():
+            val = scores.get(key)
+            if val is not None:
+                guzhi[label] = {"text": str(val)}
+        gu_ts = gu.get("time", 0)
+        if gu_ts:
+            dt = datetime.fromtimestamp(gu_ts)
+            guzhi["达成时间"] = {"text": dt.strftime("%Y-%m-%d")}
         result["guzhi"] = guzhi
-    if contest_rating:
-        result["contest_rating"] = contest_rating
+
+    # ── 4) 比赛等级分 ──
+    if elo_list:
+        latest = elo_list[0]
+        cr = {}
+        cr["等级分"] = {"text": str(latest.get("rating", 0))}
+        contest = latest.get("contest", {})
+        if contest.get("name"):
+            cr["评定比赛"] = {"text": contest["name"]}
+        if contest.get("id"):
+            cr["评定比赛"]["href"] = f"/contest/{contest['id']}"
+        elo_ts = latest.get("time", 0)
+        if elo_ts:
+            dt = datetime.fromtimestamp(elo_ts)
+            cr["达成时间"] = {"text": dt.strftime("%Y-%m-%d")}
+        result["contest_rating"] = cr
 
     return result
-
-
 def parse_home_page(html: str) -> dict:
     """
     解析登录后主页 HTML，提取运势、打卡、动态等信息
@@ -458,7 +433,7 @@ def parse_home_page(html: str) -> dict:
 
 
 # ==============================================
-# 【模块9：高级功能（Cookie + 抓取 + 解析）】
+# 【模块8：高级功能（Cookie + 抓取 + 解析）】
 # ==============================================
 
 def get_profile(url: str = None) -> dict:
@@ -517,7 +492,374 @@ def get_home() -> dict:
 
 
 # ==============================================
-# 【模块10：CLI 命令行入口】
+# 【模块9：犇犇（Feed）功能】
+# ==============================================
+
+def parse_feed_items(html: str) -> list[dict]:
+    """
+    解析洛谷主页HTML中的犇犇（feed）列表
+
+    参数：
+        html: 主页HTML源码
+
+    返回：
+        [{
+            "uid": "1157535",
+            "username": "yangrenrui",
+            "post_id": "142324",        # 可选，犇犇对应的讨论帖ID
+            "time": "2026-05-29 21:48:04",
+            "feed_id": "15897723",       # 犇犇唯一ID（来自data-report-id）
+            "content": "用户标记的输入框处理不对...",
+        }, ...]
+    """
+    items = []
+
+    # 匹配每条犇犇的 am-comment-main 结构
+    # 注意：class 属性可能用单引号或双引号，用 (["']) 捕获并 \1 反向引用
+    pattern = re.compile(
+        r'<div class="am-comment-main">.*?'
+        r'<span class="feed-username">'
+        r"""<a class=(["'])lg-fg-orange lg-bold\1 href="/user/(\d+)"[^>]*>(.*?)</a>"""
+        r'.*?</span>\s*'
+        r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})'
+        r'.*?data-report-id="(\d+)"'
+        r'.*?<span class="feed-comment"><p>(.*?)</p></span>',
+        re.DOTALL,
+    )
+
+    for match in pattern.finditer(html):
+        item = {
+            "uid": match.group(2),
+            "username": match.group(3).strip(),
+            "time": match.group(4),
+            "feed_id": match.group(5),
+            "content": _strip_html(match.group(6)),
+        }
+
+        # 提取可选的讨论帖链接
+        item_html = match.group(0)
+        discuss_match = re.search(r'href="/discuss/show/(\d+)"', item_html)
+        if discuss_match:
+            item["post_id"] = discuss_match.group(1)
+
+        items.append(item)
+
+    return items
+
+
+def view_feed() -> dict:
+    """
+    获取第1页犇犇（第1-10条，需要已登录）
+
+    GET /feed/watching 返回第 1-10 条。
+
+    返回：
+        {"code": 200, "data": {
+            "items": [...],           # 犇犇列表
+            "has_more": True/False,   # 是否满10条（可能还有更多）
+            "total": N,               # 本次获取的条数
+            "page": 0,                # 当前页（0=首页）
+        }}
+        或 {"code": 401, "msg": "未登录"}
+        或 {"code": 500, "msg": "错误描述"}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        resp = session.get(Config.FEED_WATCHING_URL, headers=Headers.BASE, timeout=10)
+        resp.raise_for_status()
+
+        items = parse_feed_items(resp.text)
+        total = len(items)
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "items": items,
+                "has_more": total >= 10,
+                "total": total,
+                "page": 0,
+            },
+        }
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+def load_more_feed(page: int) -> dict:
+    """
+    加载指定页的犇犇（需要已登录）
+
+    GET /feed/watching?page=1 返回第 11-20 条，page=2 返回第 21-30 条……
+
+    参数：
+        page: 页号（1=第11-20条，2=第21-30条，依此类推）
+
+    返回：
+        {"code": 200, "data": {
+            "items": [...],
+            "has_more": True/False,
+            "total": N,
+            "page": page,
+        }}
+        或 {"code": 401, "msg": "未登录"}
+        或 {"code": 500, "msg": "错误描述"}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        resp = session.get(
+            f"{Config.FEED_WATCHING_URL}?page={page}",
+            headers=Headers.BASE,
+            timeout=10,
+        )
+        resp.raise_for_status()
+
+        items = parse_feed_items(resp.text)
+        total = len(items)
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "items": items,
+                "has_more": total >= 10,
+                "total": total,
+                "page": page,
+            },
+        }
+    except Exception as e:
+        return {"code": 500, "msg": f"加载失败：{str(e)}"}
+
+
+# ==============================================
+# 【模块10：题目功能】
+# ==============================================
+
+DIFFICULTY_MAP = {
+    0: "暂无评定", 1: "入门", 2: "普及-",
+    3: "普及/提高-", 4: "普及+/提高",
+    5: "提高+/省选-", 6: "省选/NOI-",
+    7: "NOI", 8: "暂不评定",
+}
+
+
+def view_problem(pid: str) -> dict:
+    """
+    获取并解析洛谷题目（需要已登录）
+
+    参数：
+        pid: 题目ID，如 "P1000"
+
+    返回：
+        {"code": 200, "data": {
+            "pid": "P1000",
+            "name": "超级玛丽游戏",
+            "difficulty": "入门",
+            "totalSubmit": 1775466,
+            "totalAccepted": 678862,
+            "provider": "洛谷",
+            "samples": [["输入1", "输出1"], ...],
+            "content": {
+                "background": "...",
+                "description": "...",
+                "formatI": "无",
+                "formatO": "如描述。",
+                "hint": "...",
+            },
+        }}
+        或 {"code": 401} / {"code": 500}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        resp = session.get(
+            f"https://www.luogu.com.cn/problem/{pid}",
+            headers=Headers.BASE, timeout=10,
+        )
+        resp.raise_for_status()
+
+        ctx = _extract_lentille_json(resp.text)
+        if not ctx:
+            return {"code": 500, "msg": "无法解析题目数据（lentille-context 缺失）"}
+
+        problem = ctx.get("data", {}).get("problem", {})
+        if not problem:
+            return {"code": 500, "msg": "题目数据为空"}
+
+        content = problem.get("content", {})
+        samples = problem.get("samples", [])
+
+        # 将 samples 转为 [["输入","输出"], ...]
+        formatted_samples = []
+        for s in samples:
+            if isinstance(s, list) and len(s) >= 2:
+                formatted_samples.append([s[0] or "", s[1] or ""])
+            elif isinstance(s, dict):
+                formatted_samples.append([s.get("in", ""), s.get("out", "")])
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "pid": problem.get("pid", pid),
+                "name": content.get("name") or problem.get("name", ""),
+                "difficulty": DIFFICULTY_MAP.get(problem.get("difficulty"), "未知"),
+                "totalSubmit": problem.get("totalSubmit", 0),
+                "totalAccepted": problem.get("totalAccepted", 0),
+                "provider": problem.get("provider", {}).get("name", ""),
+                "tags": problem.get("tags", []),
+                "samples": formatted_samples,
+                "content": {
+                    "background": content.get("background", ""),
+                    "description": content.get("description", ""),
+                    "formatI": content.get("formatI", ""),
+                    "formatO": content.get("formatO", ""),
+                    "hint": content.get("hint", ""),
+                },
+            },
+        }
+
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+def view_discuss(discuss_id: str) -> dict:
+    """
+    获取并解析洛谷讨论帖（需要已登录）
+
+    参数：
+        discuss_id: 讨论ID，如 "962230"
+
+    返回：
+        {"code": 200, "data": {
+            "id": 962230,
+            "title": "求助站外题颜色评级",
+            "author": "hansang",
+            "author_uid": 723888,
+            "time": "2024-10-16 19:33",
+            "forum": "灌水区",
+            "replyCount": 2,
+            "content": "[题目链接]...",   # Markdown 格式
+        }}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        resp = session.get(
+            f"https://www.luogu.com.cn/discuss/{discuss_id}",
+            headers=Headers.BASE, timeout=10,
+        )
+        resp.raise_for_status()
+
+        ctx = _extract_lentille_json(resp.text)
+        if not ctx:
+            return {"code": 500, "msg": "无法解析讨论数据"}
+
+        post = ctx.get("data", {}).get("post", {})
+        if not post:
+            return {"code": 500, "msg": "讨论数据为空"}
+
+        author = post.get("author", {})
+        ts = post.get("time", 0)
+        time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "id": post.get("id"),
+                "title": post.get("title", ""),
+                "author": author.get("name", ""),
+                "author_uid": author.get("uid", ""),
+                "time": time_str,
+                "forum": post.get("forum", {}).get("name", ""),
+                "replyCount": post.get("replyCount", 0),
+                "content": post.get("content", ""),
+            },
+        }
+
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+def view_article(article_id: str) -> dict:
+    """
+    获取并解析洛谷文章（需要已登录）
+
+    参数：
+        article_id: 文章ID，如 "qzywo77y"
+
+    返回：
+        {"code": 200, "data": {
+            "id": "qzywo77y",
+            "title": "浅谈公平组合游戏",
+            "author": "Moya_Rao",
+            "author_uid": 814130,
+            "time": "2026-05-29 12:33",
+            "upvote": 105,
+            "replyCount": 73,
+            "category": "题解",
+            "content": "本文同步发表在...",  # Markdown 格式
+        }}
+    """
+    CATEGORY_MAP = {0: "其他", 1: "题解", 2: "技术", 3: "游记", 4: "分享", 5: "闲话"}
+
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        resp = session.get(
+            f"https://www.luogu.com.cn/article/{article_id}",
+            headers=Headers.BASE, timeout=30,
+        )
+        resp.raise_for_status()
+
+        ctx = _extract_lentille_json(resp.text)
+        if not ctx:
+            return {"code": 500, "msg": "无法解析文章数据"}
+
+        article = ctx.get("data", {}).get("article", {})
+        if not article:
+            return {"code": 500, "msg": "文章数据为空"}
+
+        author = article.get("author", {})
+        ts = article.get("time", 0)
+        time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+        cat = article.get("category", 0)
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "id": article.get("lid", article_id),
+                "title": article.get("title", ""),
+                "author": author.get("name", ""),
+                "author_uid": author.get("uid", ""),
+                "time": time_str,
+                "upvote": article.get("upvote", 0),
+                "replyCount": article.get("replyCount", 0),
+                "favorCount": article.get("favorCount", 0),
+                "category": CATEGORY_MAP.get(cat, f"未知({cat})"),
+                "content": article.get("content", ""),
+            },
+        }
+
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+# ==============================================
+# 【模块12：CLI 命令行入口】
 # ==============================================
 
 def _resolve_password(args) -> str:
@@ -570,10 +912,6 @@ def main():
         help="从标准输入读取密码（用于脚本管道，更安全）",
     )
 
-    # view 子命令
-    view_p = subparsers.add_parser("view", help="访问洛谷页面")
-    view_p.add_argument("--url", help="自定义访问地址（留空使用默认）")
-
     # profile 子命令
     profile_p = subparsers.add_parser("profile", help="查看用户资料")
     profile_p.add_argument("--url", help="用户主页地址（留空使用默认）")
@@ -584,6 +922,25 @@ def main():
     # logout 子命令
     subparsers.add_parser("logout", help="清除本地 Cookie（注销）")
 
+    # feed 子命令
+    feed_p = subparsers.add_parser("feed", help="查看犇犇动态")
+    feed_p.add_argument(
+        "--page", type=int, default=None,
+        help="指定页号（1=第11-20条，2=第21-30条……；省略=第1-10条）",
+    )
+
+    # problem 子命令
+    problem_p = subparsers.add_parser("problem", help="查看题目预览")
+    problem_p.add_argument("pid", help="题目ID，如 P1000")
+
+    # discuss 子命令
+    discuss_p = subparsers.add_parser("discuss", help="查看讨论帖")
+    discuss_p.add_argument("did", help="讨论ID，如 962230")
+
+    # article 子命令
+    article_p = subparsers.add_parser("article", help="查看文章")
+    article_p.add_argument("aid", help="文章ID，如 qzywo77y")
+
     args = parser.parse_args()
 
     # ---- 命令分发 ----
@@ -592,10 +949,6 @@ def main():
         result = login(args.user, password)
         # 清除本地变量中的密码
         password = ""
-        print(json.dumps(result, ensure_ascii=False))
-
-    elif args.command == "view":
-        result = view_page(args.url)
         print(json.dumps(result, ensure_ascii=False))
 
     elif args.command == "profile":
@@ -609,6 +962,25 @@ def main():
     elif args.command == "logout":
         result = clear_cookie()
         print(json.dumps(result, ensure_ascii=False))
+
+    elif args.command == "feed":
+        if args.page is not None:
+            result = load_more_feed(args.page)
+        else:
+            result = view_feed()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.command == "problem":
+        result = view_problem(args.pid)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.command == "discuss":
+        result = view_discuss(args.did)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.command == "article":
+        result = view_article(args.aid)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
 
     else:
         print(json.dumps({"code": 50001}, ensure_ascii=False))
