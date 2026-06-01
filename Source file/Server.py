@@ -23,6 +23,10 @@ import getpass
 from datetime import datetime
 
 
+# 版本号
+VERSION = "v1.0.0"
+
+
 # ==============================================
 # 【模块1：全局配置】
 # ==============================================
@@ -791,6 +795,109 @@ def view_discuss(discuss_id: str) -> dict:
         return {"code": 500, "msg": f"获取失败：{str(e)}"}
 
 
+# ==============================================
+# 【模块11：讨论列表功能】
+# ==============================================
+
+DISCUSS_LIST_URL = "https://www.luogu.com.cn/discuss"
+
+
+def parse_discuss_list(html: str) -> list[dict]:
+    """
+    从 lentille-context JSON 解析讨论列表
+
+    返回：
+        [{
+            "uid": "2031506",
+            "username": "gcx20121216",
+            "discuss_id": "1300939",
+            "title": "请求大神",
+            "time": "2026-06-01 19:31:51",
+            "forum": "B2092 开关灯",
+            "replyCount": 5,
+            "topped": False,
+        }, ...]
+    """
+    ctx = _extract_lentille_json(html)
+    if not ctx:
+        return []
+
+    posts = ctx.get("data", {}).get("posts", {})
+    result = posts.get("result", [])
+    if not result:
+        return []
+
+    items = []
+    for post in result:
+        author = post.get("author", {})
+        ts = post.get("time", 0)
+        time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        forum = post.get("forum", {})
+
+        items.append({
+            "uid": str(author.get("uid", "")),
+            "username": author.get("name", ""),
+            "discuss_id": str(post.get("id", "")),
+            "title": post.get("title", ""),
+            "time": time_str,
+            "forum": forum.get("name", ""),
+            "replyCount": post.get("replyCount", 0),
+            "topped": post.get("topped", False),
+        })
+
+    return items
+
+
+def view_discuss_list(page: int = 1) -> dict:
+    """
+    获取并解析讨论列表（需要已登录）
+
+    参数：
+        page: 页号（1-20，1 为第1页）
+
+    返回：
+        {"code": 200, "data": {
+            "items": [...],
+            "page": page,
+            "total": N,
+        }}
+        或 {"code": 401} / {"code": 500}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        url = DISCUSS_LIST_URL if page <= 1 else f"{DISCUSS_LIST_URL}?page={page}"
+        resp = session.get(url, headers=Headers.BASE, timeout=10)
+        resp.raise_for_status()
+
+        items = parse_discuss_list(resp.text)
+
+        # 从 lentille-context 获取分页信息
+        ctx = _extract_lentille_json(resp.text)
+        per_page = 30
+        total_count = 0
+        if ctx:
+            posts = ctx.get("data", {}).get("posts", {})
+            per_page = posts.get("perPage", 30)
+            total_count = posts.get("count", 0)
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "items": items,
+                "page": page,
+                "perPage": per_page,
+                "totalCount": total_count,
+                "total": len(items),
+            },
+        }
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
 def view_article(article_id: str) -> dict:
     """
     获取并解析洛谷文章（需要已登录）
@@ -859,7 +966,112 @@ def view_article(article_id: str) -> dict:
 
 
 # ==============================================
-# 【模块12：CLI 命令行入口】
+# 【模块12：文章列表功能】
+# ==============================================
+
+ARTICLE_LIST_URL = "https://www.luogu.com.cn/article"
+
+CATEGORY_NAMES = {0: "其他", 1: "题解", 2: "技术", 3: "游记", 4: "分享", 5: "闲话"}
+
+
+def parse_article_list(html: str) -> list[dict]:
+    """
+    从 lentille-context JSON 解析文章列表
+
+    返回：
+        [{
+            "lid": "qzywo77y",
+            "title": "浅谈公平组合游戏",
+            "category": "分享",
+            "time": "2026-05-29 12:33",
+            "author_uid": "814130",
+            "author": "Moya_Rao",
+            "upvote": 134,
+            "replyCount": 86,
+        }, ...]
+    """
+    ctx = _extract_lentille_json(html)
+    if not ctx:
+        return []
+
+    articles = ctx.get("data", {}).get("articles", {})
+    result = articles.get("result", [])
+    if not result:
+        return []
+
+    items = []
+    for a in result:
+        author = a.get("author", {})
+        ts = a.get("time", 0)
+        time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+        cat = a.get("category", 0)
+
+        items.append({
+            "lid": a.get("lid", ""),
+            "title": a.get("title", ""),
+            "category": CATEGORY_NAMES.get(cat, f"未知({cat})"),
+            "time": time_str,
+            "author_uid": str(author.get("uid", "")),
+            "author": author.get("name", ""),
+            "upvote": a.get("upvote", 0),
+            "replyCount": a.get("replyCount", 0),
+        })
+
+    return items
+
+
+def view_article_list(page: int = 1) -> dict:
+    """
+    获取并解析文章列表（需要已登录）
+
+    参数：
+        page: 页号（1-30，1 为第1页）
+
+    返回：
+        {"code": 200, "data": {
+            "items": [...],
+            "page": page,
+            "perPage": 15,
+            "totalCount": 450,
+        }}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        url = ARTICLE_LIST_URL if page <= 1 else f"{ARTICLE_LIST_URL}?page={page}"
+        resp = session.get(url, headers=Headers.BASE, timeout=10)
+        resp.raise_for_status()
+
+        items = parse_article_list(resp.text)
+
+        # 分页信息
+        ctx = _extract_lentille_json(resp.text)
+        per_page = 15
+        total_count = 0
+        if ctx:
+            articles = ctx.get("data", {}).get("articles", {})
+            per_page = articles.get("perPage", 15)
+            total_count = articles.get("count", 0)
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "items": items,
+                "page": page,
+                "perPage": per_page,
+                "totalCount": total_count,
+                "total": len(items),
+            },
+        }
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+# ==============================================
+# 【模块13：CLI 命令行入口】
 # ==============================================
 
 def _resolve_password(args) -> str:
