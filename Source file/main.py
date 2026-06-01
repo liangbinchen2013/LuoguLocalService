@@ -14,6 +14,7 @@ import getpass
 # 直接将 Server.py 作为模块导入（消除子进程，避免密码在进程列表中泄露）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Server import (
+    VERSION,
     login,
     get_profile,
     get_home,
@@ -23,7 +24,9 @@ from Server import (
     load_more_feed,
     view_problem,
     view_discuss,
+    view_discuss_list,
     view_article,
+    view_article_list,
 )
 
 # Rich 终端 Markdown 渲染
@@ -402,6 +405,159 @@ def cmd_article(args: list[str]) -> None:
     _render_markdown("文章内容", d.get("content", ""))
 
 
+def cmd_discusses(args: list[str]) -> None:
+    """查看最新讨论（分页浏览并选择查看）"""
+    page = 1
+    all_items = []
+    total_count = None
+
+    while True:
+        print_header("最新讨论")
+        print_info("正在获取讨论列表...")
+        result = view_discuss_list(page)
+
+        if result["code"] == 401:
+            print_warning("未登录，请先执行 login")
+            return
+        elif result["code"] != 200:
+            print_error(f"获取失败：{result['msg']}")
+            return
+
+        data = result["data"]
+        items = data["items"]
+        per_page = data.get("perPage", 30)
+        total_count = data.get("totalCount", 0)
+        max_pages = max(1, (total_count + per_page - 1) // per_page) if total_count else 20
+
+        if not items:
+            if page == 1:
+                print_warning("暂无讨论")
+            else:
+                print_info("没有更多讨论了")
+            break
+
+        start = len(all_items) + 1
+        for i, item in enumerate(items, start):
+            prefix = ""
+            if item.get("topped"):
+                prefix = f"{Fore.MAGENTA}[置顶]{Style.RESET_ALL} "
+            print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
+                  f"{Fore.GREEN}{item['username']}{Style.RESET_ALL}  "
+                  f"({item.get('uid', '?')})  "
+                  f"{Fore.BLUE}{item.get('time', '')}{Style.RESET_ALL}"
+                  f"  {Fore.CYAN}{item.get('replyCount', 0)} 回复{Style.RESET_ALL}")
+            print(f"      {prefix}{Fore.YELLOW}[{item.get('forum', '')}]{Style.RESET_ALL} "
+                  f"{item['title']}")
+        print()
+
+        all_items.extend(items)
+        total = len(all_items)
+
+        has_more = page < max_pages and len(items) > 0
+        if not has_more:
+            print_success(f"共加载 {total} 条讨论" + (f"（已全部加载）" if page >= max_pages else ""))
+            choice = input(f"{Fore.CYAN}输入数字(#1~#{total})查看讨论，按回车结束：{Style.RESET_ALL}").strip()
+        else:
+            print_info(f"第 {page}/{max_pages} 页 · 共 {total_count} 条讨论")
+            choice = input(
+                f"{Fore.CYAN}输入 y 加载下一页，输入数字(#1~#{total})查看讨论，按回车结束：{Style.RESET_ALL}"
+            ).strip().lower()
+
+        if not choice:
+            break
+
+        if has_more and choice == 'y':
+            page += 1
+            continue
+
+        # 尝试解析为数字序号 → 查看该讨论
+        try:
+            idx = int(choice)
+            if 1 <= idx <= total:
+                discuss_id = all_items[idx - 1]["discuss_id"]
+                cmd_discuss([str(discuss_id)])
+                return
+            else:
+                print_error(f"序号超出范围（应为 1-{total}）")
+        except ValueError:
+            print_error("无效输入，请输入 y、数字序号或回车")
+
+
+def cmd_articles(args: list[str]) -> None:
+    """查看最新文章（分页浏览并选择查看）"""
+    page = 1
+    all_items = []
+    total_count = None
+
+    while True:
+        print_header("最新文章")
+        print_info("正在获取文章列表...")
+        result = view_article_list(page)
+
+        if result["code"] == 401:
+            print_warning("未登录，请先执行 login")
+            return
+        elif result["code"] != 200:
+            print_error(f"获取失败：{result['msg']}")
+            return
+
+        data = result["data"]
+        items = data["items"]
+        per_page = data.get("perPage", 15)
+        total_count = data.get("totalCount", 0)
+        max_pages = max(1, (total_count + per_page - 1) // per_page) if total_count else 30
+
+        if not items:
+            if page == 1:
+                print_warning("暂无文章")
+            else:
+                print_info("没有更多文章了")
+            break
+
+        start = len(all_items) + 1
+        for i, item in enumerate(items, start):
+            print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
+                  f"{Fore.GREEN}{item['author']}{Style.RESET_ALL}  "
+                  f"({item.get('author_uid', '?')})  "
+                  f"{Fore.BLUE}{item.get('time', '')}{Style.RESET_ALL}"
+                  f"  {Fore.CYAN}赞 {item.get('upvote', 0)}  "
+                  f"{item.get('replyCount', 0)} 回复{Style.RESET_ALL}")
+            print(f"      {Fore.YELLOW}[{item.get('category', '')}]{Style.RESET_ALL} "
+                  f"{item['title']}")
+        print()
+
+        all_items.extend(items)
+        total = len(all_items)
+
+        has_more = page < max_pages and len(items) > 0
+        if not has_more:
+            print_success(f"共加载 {total} 篇文章" + (f"（已全部加载）" if page >= max_pages else ""))
+            choice = input(f"{Fore.CYAN}输入数字(#1~#{total})查看文章，按回车结束：{Style.RESET_ALL}").strip()
+        else:
+            print_info(f"第 {page}/{max_pages} 页 · 共 {total_count} 篇文章")
+            choice = input(
+                f"{Fore.CYAN}输入 y 加载下一页，输入数字(#1~#{total})查看文章，按回车结束：{Style.RESET_ALL}"
+            ).strip().lower()
+
+        if not choice:
+            break
+
+        if has_more and choice == 'y':
+            page += 1
+            continue
+
+        try:
+            idx = int(choice)
+            if 1 <= idx <= total:
+                article_id = all_items[idx - 1]["lid"]
+                cmd_article([str(article_id)])
+                return
+            else:
+                print_error(f"序号超出范围（应为 1-{total}）")
+        except ValueError:
+            print_error("无效输入，请输入 y、数字序号或回车")
+
+
 def cmd_logout(args: list[str]) -> None:
     """退出登录"""
     print_header("退出登录")
@@ -449,7 +605,9 @@ COMMANDS: dict[str, tuple[str, callable]] = {
     "feed":     ("查看犇犇动态", cmd_feed),
     "problem":  ("查看题目预览 <PID>", cmd_problem),
     "discuss":  ("查看讨论帖 <ID>", cmd_discuss),
+    "discusses": ("查看最新讨论（可翻页选择）", cmd_discusses),
     "article":  ("查看文章 <ID>", cmd_article),
+    "articles": ("查看最新文章（可翻页选择）", cmd_articles),
     "logout":   ("退出登录(清除Cookie)", cmd_logout),
     "help":     ("显示帮助信息", cmd_help),
     "exit":     ("退出程序", cmd_exit),
@@ -467,14 +625,17 @@ ALIASES = {
     "p": "problem",
     "d": "discuss",
     "dis": "discuss",
+    "ds": "discusses",
     "a": "article",
     "art": "article",
+    "as": "articles",
 }
 
 
 def main():
     print(f"\n{Style.BRIGHT}{Fore.CYAN}╔{'═'*40}╗")
     print(f"║{' ' * 12}洛谷命令行工具{' ' * 13}║")
+    print(f"║{' ' * 15}{VERSION}{' ' * 16}║")
     print(f"╚{'═'*40}╝{Style.RESET_ALL}")
 
     if is_logged_in():
