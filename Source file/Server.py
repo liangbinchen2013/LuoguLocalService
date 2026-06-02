@@ -21,10 +21,20 @@ import json
 import sys
 import getpass
 from datetime import datetime
+from urllib.parse import quote
 
 
 # 版本号
-VERSION = "v1.0.0"
+VERSION = "v1.1.0"
+
+# 详细日志开关
+VERBOSE = False
+
+
+def _vlog(msg: str) -> None:
+    """详细日志输出"""
+    if VERBOSE:
+        print(f"[VERBOSE] {msg}", file=sys.stderr)
 
 
 # ==============================================
@@ -496,6 +506,93 @@ def get_home() -> dict:
 
 
 # ==============================================
+# 【模块8.5：打卡功能】
+# ==============================================
+
+def check_punch_status() -> dict:
+    """
+    检测今日是否已打卡（需要已登录）
+
+    通过解析首页 HTML 判断：
+      - 存在 <a class="am-btn am-btn-warning" name="punch">  → 未打卡
+      - 不存在或已 disabled → 已打卡
+
+    返回：
+        {"checked_in": True}  或  {"checked_in": False}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录"}
+
+    try:
+        resp = session.get("https://www.luogu.com.cn/", headers=Headers.BASE, timeout=10)
+        resp.raise_for_status()
+
+        # 未打卡时有 name="punch" + am-btn-warning
+        checked_in = 'name="punch"' not in resp.text or \
+                     "am-btn-warning" not in resp.text
+
+        return {"code": 200, "checked_in": checked_in}
+    except Exception as e:
+        return {"code": 500, "msg": str(e), "checked_in": True}
+
+
+def do_punch() -> dict:
+    """
+    执行打卡（需要已登录）
+
+    POST /index/ajax_punch
+
+    返回：
+        {"success": True, "msg": "打卡成功"}  或
+        {"success": False, "msg": "今天已经打过卡了"}
+    """
+    session = load_cookie()
+    if not session:
+        return {"success": False, "msg": "未登录，请先执行 login"}
+
+    try:
+        # 先获取首页拿到 CSRF Token
+        resp = session.get("https://www.luogu.com.cn/", headers=Headers.BASE, timeout=10)
+        csrf_match = re.search(r'<meta name="csrf-token" content="(.*?)">', resp.text)
+
+        headers = {
+            **Headers.BASE,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.luogu.com.cn",
+            "Referer": "https://www.luogu.com.cn/",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if csrf_match:
+            headers["X-CSRF-Token"] = csrf_match.group(1)
+
+        resp = session.post(
+            "https://www.luogu.com.cn/index/ajax_punch",
+            data={"verify": ""},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+
+        # 解析返回（可能是 JSON 或带括号包裹）
+        text = resp.text.strip()
+        if text.startswith("("):
+            text = text.strip("()")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return {"success": False, "msg": f"返回数据解析失败：{text[:100]}"}
+
+        if data.get("code") == 200:
+            return {"success": True, "msg": "打卡成功"}
+        else:
+            return {"success": False, "msg": data.get("message", "今天已经打过卡了")}
+
+    except Exception as e:
+        return {"success": False, "msg": str(e)}
+
+
+# ==============================================
 # 【模块9：犇犇（Feed）功能】
 # ==============================================
 
@@ -523,7 +620,7 @@ def parse_feed_items(html: str) -> list[dict]:
     pattern = re.compile(
         r'<div class="am-comment-main">.*?'
         r'<span class="feed-username">'
-        r"""<a class=(["'])lg-fg-orange lg-bold\1 href="/user/(\d+)"[^>]*>(.*?)</a>"""
+        r"""<a class=(["'])lg-fg-(?:red|orange) lg-bold\1 href="/user/(\d+)"[^>]*>(.*?)</a>"""
         r'.*?</span>\s*'
         r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})'
         r'.*?data-report-id="(\d+)"'
@@ -784,6 +881,7 @@ def view_discuss(discuss_id: str) -> dict:
                 "title": post.get("title", ""),
                 "author": author.get("name", ""),
                 "author_uid": author.get("uid", ""),
+                "author_color": author.get("color", ""),
                 "time": time_str,
                 "forum": post.get("forum", {}).get("name", ""),
                 "replyCount": post.get("replyCount", 0),
@@ -791,6 +889,91 @@ def view_discuss(discuss_id: str) -> dict:
             },
         }
 
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+def parse_discuss_replies(html: str) -> tuple[list[dict], int, int]:
+    """
+    从 lentille-context JSON 解析讨论回复列表
+
+    返回：
+        (items, total_count, per_page)
+        items: [{
+            "id": 2222923,
+            "author": "panyf",
+            "author_uid": "221955",
+            "time": "2020-07-27 15:44",
+            "content": "...",
+        }, ...]
+    """
+    ctx = _extract_lentille_json(html)
+    if not ctx:
+        return [], 0, 0
+
+    replies = ctx.get("data", {}).get("replies", {})
+    result = replies.get("result", [])
+    count = replies.get("count", 0)
+    per_page = replies.get("perPage", 10)
+
+    items = []
+    for r in result:
+        author = r.get("author", {})
+        ts = r.get("time", 0)
+        time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+
+        items.append({
+            "id": r.get("id", 0),
+            "author": author.get("name", ""),
+            "author_uid": str(author.get("uid", "")),
+            "color": author.get("color", ""),
+            "time": time_str,
+            "content": r.get("content", ""),
+        })
+
+    return items, count, per_page
+
+
+def view_discuss_replies(discuss_id: str, page: int = 1) -> dict:
+    """
+    获取讨论的回复列表（需要已登录）
+
+    参数：
+        discuss_id: 讨论ID
+        page: 回复页号（1-based，每页10条）
+
+    返回：
+        {"code": 200, "data": {
+            "items": [...],
+            "totalCount": N,
+            "perPage": 10,
+            "page": page,
+        }}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        url = f"https://www.luogu.com.cn/discuss/{discuss_id}"
+        if page > 1:
+            url += f"?page={page}"
+
+        resp = session.get(url, headers=Headers.BASE, timeout=10)
+        resp.raise_for_status()
+
+        items, total_count, per_page = parse_discuss_replies(resp.text)
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "items": items,
+                "totalCount": total_count,
+                "perPage": per_page,
+                "page": page,
+            },
+        }
     except Exception as e:
         return {"code": 500, "msg": f"获取失败：{str(e)}"}
 
@@ -837,6 +1020,7 @@ def parse_discuss_list(html: str) -> list[dict]:
         items.append({
             "uid": str(author.get("uid", "")),
             "username": author.get("name", ""),
+            "color": author.get("color", ""),
             "discuss_id": str(post.get("id", "")),
             "title": post.get("title", ""),
             "time": time_str,
@@ -952,6 +1136,7 @@ def view_article(article_id: str) -> dict:
                 "title": article.get("title", ""),
                 "author": author.get("name", ""),
                 "author_uid": author.get("uid", ""),
+                "author_color": author.get("color", ""),
                 "time": time_str,
                 "upvote": article.get("upvote", 0),
                 "replyCount": article.get("replyCount", 0),
@@ -1013,6 +1198,7 @@ def parse_article_list(html: str) -> list[dict]:
             "time": time_str,
             "author_uid": str(author.get("uid", "")),
             "author": author.get("name", ""),
+            "color": author.get("color", ""),
             "upvote": a.get("upvote", 0),
             "replyCount": a.get("replyCount", 0),
         })
@@ -1071,7 +1257,360 @@ def view_article_list(page: int = 1) -> dict:
 
 
 # ==============================================
-# 【模块13：CLI 命令行入口】
+# 【模块13：文章回复功能】
+# ==============================================
+
+def view_article_replies(article_id: str, after: str = "") -> dict:
+    """
+    获取文章的回复列表（需要已登录）
+    使用游标分页：after 为上一页最后一条回复的 id
+
+    参数：
+        article_id: 文章ID
+        after: 游标（上一页最后一条回复的id，首次调用传空）
+
+    返回：
+        {"code": 200, "data": {
+            "items": [...],
+            "after": "1774097",       # 当前页最后一条id，用于下一页
+        }}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        url = f"https://www.luogu.com.cn/article/{article_id}/replies?sort="
+        if after:
+            url += f"&after={after}"
+
+        resp = session.get(url, headers=Headers.BASE, timeout=10)
+        resp.raise_for_status()
+
+        data = resp.json()
+        reply_slice = data.get("replySlice", [])
+
+        items = []
+        for r in reply_slice:
+            author = r.get("author", {})
+            ts = r.get("time", 0)
+            time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+
+            items.append({
+                "id": r.get("id", 0),
+                "author": author.get("name", ""),
+                "author_uid": str(author.get("uid", "")),
+                "color": author.get("color", ""),
+                "time": time_str,
+                "content": r.get("content", ""),
+            })
+
+        # 当前页最后一条id作为下一次的 after 游标
+        next_after = str(reply_slice[-1]["id"]) if reply_slice else ""
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "items": items,
+                "after": next_after,
+            },
+        }
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+# ==============================================
+# 【模块14：题目列表功能】
+# ==============================================
+
+PROBLEM_LIST_URL = "https://www.luogu.com.cn/problem/list"
+
+DIFFICULTY_NAMES = {
+    0: "暂无评定", 1: "入门", 2: "普及-",
+    3: "普及/提高-", 4: "普及+/提高",
+    5: "提高+/省选-", 6: "省选/NOI-",
+    7: "NOI",
+}
+
+
+def view_problem_list(page: int = 1, keyword: str = "", difficulty: str = "") -> dict:
+    """
+    获取题目列表（需要已登录），支持搜索和筛选
+
+    参数：
+        page: 页号
+        keyword: 搜索关键词（留空=全部）
+        difficulty: 难度筛选，格式如 "1|2|3"（留空=全部）
+
+    返回：
+        {"code": 200, "data": {
+            "items": [{pid, name, difficulty, submitted, accepted, tags, ...}],
+            "page": page, "perPage": 50, "totalCount": N,
+        }}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        params = ["type=luogu", f"page={page}"]
+        if keyword:
+            params.append(f"keyword={quote(keyword)}")
+        if difficulty:
+            params.append(f"difficulty={difficulty}")
+
+        url = PROBLEM_LIST_URL + "?" + "&".join(params)
+        resp = session.get(url, headers=Headers.BASE, timeout=10)
+        resp.raise_for_status()
+
+        ctx = _extract_lentille_json(resp.text)
+        if not ctx:
+            return {"code": 500, "msg": "无法解析题目列表数据"}
+
+        problems = ctx.get("data", {}).get("problems", {})
+        result = problems.get("result", [])
+        per_page = problems.get("perPage", 50)
+        total_count = problems.get("count", 0)
+
+        items = []
+        for p in result:
+            items.append({
+                "pid": p.get("pid", ""),
+                "name": p.get("name", ""),
+                "difficulty": DIFFICULTY_NAMES.get(p.get("difficulty", 0), "未知"),
+                "submitted": p.get("totalSubmit", 0),
+                "accepted": p.get("totalAccepted", 0),
+                "tags": [str(t) for t in p.get("tags", [])],
+                "provider": p.get("provider", {}).get("name", "") if isinstance(p.get("provider"), dict) else "",
+            })
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {
+                "items": items,
+                "page": page,
+                "perPage": per_page,
+                "totalCount": total_count,
+            },
+        }
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+# ==============================================
+# 【模块15：陶片放逐功能】
+# ==============================================
+
+PERMISSION_NAMES = {
+    0: "无变更",
+    1: "封禁",
+    2: "解封",
+    131072: "棕名",
+    -131072: "移除棕名",
+}
+
+
+def _desc_permission(perm: int) -> str:
+    """将权限变更数值转为可读描述"""
+    if perm == 0:
+        return "无变更"
+    parts = []
+    # 检查封禁相关权限（简化处理）
+    if perm & 1:
+        parts.append("封禁")
+    if perm & 131072:
+        parts.append("棕名")
+    if not parts:
+        parts.append(f"权限变更({perm})")
+    return "/".join(parts)
+
+
+def view_judgement() -> dict:
+    """
+    获取陶片放逐日志
+
+    GET /judgement (Accept: application/json)
+
+    返回：
+        {"code": 200, "data": {"items": [...]}}
+    """
+    session = load_cookie()
+    if not session:
+        return {"code": 401, "msg": "未登录，请先执行 login"}
+
+    try:
+        headers = {
+            **Headers.BASE,
+            "Accept": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        resp = session.get("https://www.luogu.com.cn/judgement", headers=headers, timeout=15)
+        resp.raise_for_status()
+
+        data = resp.json()
+        logs = data.get("logs", [])
+
+        # 按时间分组：同一时间戳合并为一条
+        groups = {}
+        for entry in logs:
+            user = entry.get("user", {})
+            ts = entry.get("time", 0)
+            time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+            uid = str(user.get("uid", ""))
+
+            key = (time_str, uid)
+            if key not in groups:
+                groups[key] = {
+                    "uid": uid,
+                    "username": user.get("name", ""),
+                    "color": user.get("color", ""),
+                    "reasons": [],
+                    "added": 0,
+                    "revoked": 0,
+                    "time": time_str,
+                }
+            groups[key]["reasons"].append(entry.get("reason", ""))
+            groups[key]["added"] |= entry.get("addedPermission", 0)
+            groups[key]["revoked"] |= entry.get("revokedPermission", 0)
+
+        # 标注非处罚（绿色）原因
+        NON_PUNISH_REASONS = {
+            "上传站外图片", "上传站外头像", "上传可站外头像",
+            "题库志愿者轮换", "题库志愿者轮换，感谢贡献",
+            "数学内容审核员轮换", "专区/志愿轮换", "专区/志愿轮换，感谢贡献",
+        }
+
+        items = []
+        for k in sorted(groups.keys(), reverse=True):
+            g = groups[k]
+            is_punish = (g["added"] != 0 or g["revoked"] != 0)
+            items.append({
+                "uid": g["uid"],
+                "username": g["username"],
+                "color": g["color"],
+                "reasons": g["reasons"],
+                "added": g["added"],
+                "revoked": g["revoked"],
+                "time": g["time"],
+                "is_punish": is_punish,
+            })
+
+        return {
+            "code": 200,
+            "msg": "获取成功",
+            "data": {"items": items},
+        }
+    except Exception as e:
+        return {"code": 500, "msg": f"获取失败：{str(e)}"}
+
+
+# ==============================================
+# 【模块16：用户备注功能】
+# ==============================================
+
+NOTES_PATH = "user_notes.json"
+
+
+def load_user_notes() -> dict:
+    """加载用户备注文件"""
+    if not os.path.exists(NOTES_PATH):
+        return {}
+    try:
+        with open(NOTES_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_user_note(uid: str, name: str, note: str) -> dict:
+    """保存或更新用户备注，返回操作结果"""
+    notes = load_user_notes()
+    notes[uid] = {"name": name, "note": note}
+    try:
+        with open(NOTES_PATH, "w", encoding="utf-8") as f:
+            json.dump(notes, f, ensure_ascii=False, indent=2)
+        return {"success": True, "msg": f"已为 {name} (UID:{uid}) 添加备注"}
+    except Exception as e:
+        return {"success": False, "msg": str(e)}
+
+
+def delete_user_note(uid: str) -> dict:
+    """删除用户备注"""
+    notes = load_user_notes()
+    if uid in notes:
+        name = notes[uid].get("name", uid)
+        del notes[uid]
+        try:
+            with open(NOTES_PATH, "w", encoding="utf-8") as f:
+                json.dump(notes, f, ensure_ascii=False, indent=2)
+            return {"success": True, "msg": f"已删除 {name} 的备注"}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+    return {"success": False, "msg": f"未找到 UID:{uid} 的备注"}
+
+
+def get_user_note(uid: str) -> str:
+    """获取用户备注文本，无备注返回空字符串"""
+    notes = load_user_notes()
+    if uid in notes:
+        return notes[uid].get("note", "")
+    return ""
+
+
+# ==============================================
+# 【模块16.5：用户自定义颜色】
+# ==============================================
+
+COLORS_PATH = "user_colors.json"
+
+
+def load_user_colors() -> dict:
+    """加载用户自定义颜色文件"""
+    if not os.path.exists(COLORS_PATH):
+        return {}
+    try:
+        with open(COLORS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_user_color(uid: str, color: str) -> dict:
+    """保存用户自定义颜色"""
+    colors = load_user_colors()
+    colors[uid] = color
+    try:
+        with open(COLORS_PATH, "w", encoding="utf-8") as f:
+            json.dump(colors, f, ensure_ascii=False, indent=2)
+        return {"success": True, "msg": f"已设置 UID:{uid} 的颜色为 {color}"}
+    except Exception as e:
+        return {"success": False, "msg": str(e)}
+
+
+def delete_user_color(uid: str) -> dict:
+    """删除用户自定义颜色"""
+    colors = load_user_colors()
+    if uid in colors:
+        del colors[uid]
+        try:
+            with open(COLORS_PATH, "w", encoding="utf-8") as f:
+                json.dump(colors, f, ensure_ascii=False, indent=2)
+            return {"success": True, "msg": f"已删除 UID:{uid} 的自定义颜色"}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+    return {"success": False, "msg": f"未找到 UID:{uid} 的自定义颜色"}
+
+
+def get_user_color(uid: str) -> str:
+    """获取用户自定义颜色，没有则返回空字符串"""
+    colors = load_user_colors()
+    return colors.get(uid, "")
+
+
+# ==============================================
+# 【模块17：CLI 命令行入口】
 # ==============================================
 
 def _resolve_password(args) -> str:

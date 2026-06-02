@@ -11,10 +11,14 @@ import sys
 import re
 import getpass
 
+# LaTeX 转 Unicode 映射
+from latex_unicode import latex_to_unicode
+
 # 直接将 Server.py 作为模块导入（消除子进程，避免密码在进程列表中泄露）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Server import (
     VERSION,
+    VERBOSE,
     login,
     get_profile,
     get_home,
@@ -25,8 +29,22 @@ from Server import (
     view_problem,
     view_discuss,
     view_discuss_list,
+    view_discuss_replies,
     view_article,
     view_article_list,
+    view_article_replies,
+    check_punch_status,
+    do_punch,
+    view_problem_list,
+    view_judgement,
+    load_user_notes,
+    save_user_note,
+    delete_user_note,
+    get_user_note,
+    load_user_colors,
+    save_user_color,
+    delete_user_color,
+    get_user_color,
 )
 
 # Rich 终端 Markdown 渲染
@@ -82,39 +100,112 @@ def print_divider() -> None:
 
 
 # ==============================================
+# 用户颜色与备注
+# ==============================================
+
+# 洛谷颜色名 → colorama 颜色码
+_LUOGU_COLOR_MAP = {
+    "Red":       Fore.RED,
+    "Purple":    Fore.MAGENTA,
+    "Orange":    Fore.YELLOW,
+    "Blue":      Fore.BLUE,
+    "Green":     Fore.GREEN,
+    "Cyan":      Fore.CYAN,
+    "Gray":      Fore.LIGHTBLACK_EX if hasattr(Fore, 'LIGHTBLACK_EX') else Fore.RESET,
+    "Brown":     "\033[38;5;130m",   # 深橙/棕
+    "Gold":      "\033[38;5;220m",   # 金色
+    "Cheater":   "\033[38;5;245m",   # 灰白
+    "Black":     "\033[38;5;240m",   # 深灰
+}
+
+
+def _colorize(name: str, color: str, uid: str = "") -> str:
+    """根据洛谷颜色名（优先自定义颜色）返回带ANSI颜色的用户名"""
+    c = ""
+    # 1. 用户自定义颜色优先
+    if uid:
+        custom = get_user_color(uid)
+        if custom:
+            c = _LUOGU_COLOR_MAP.get(custom) or custom
+    # 2. 洛谷自带颜色
+    if not c and color:
+        c = _LUOGU_COLOR_MAP.get(color)
+    if c:
+        return f"{c}{name}{Style.RESET_ALL}"
+    return f"{Fore.GREEN}{name}{Style.RESET_ALL}"
+
+
+def _get_note_for(uid: str) -> str:
+    """获取用户备注文本，用于显示"""
+    n = get_user_note(uid)
+    if n:
+        return f" {Fore.MAGENTA}[{n}]{Style.RESET_ALL}"
+    return ""
+
+
+# ==============================================
 # Markdown 渲染
 # ==============================================
 
 def _simplify_latex(text: str) -> str:
     """简化 LaTeX 数学公式为纯文本"""
     text = re.sub(r'\$\$.*?\$\$', '[数学公式]', text, flags=re.DOTALL)
-    text = re.sub(r'\$([^$]+?)\$', lambda m: m.group(1).strip(), text)
+    text = re.sub(r'\$([^$]+?)\$', lambda m: latex_to_unicode(m.group(1).strip()), text)
     return text
 
 
 def _render_markdown(title: str, markdown_text: str) -> None:
-    """用 rich 渲染 Markdown（不可用时降级为纯文本）"""
+    """渲染 Markdown，长内容自动分页"""
     if not markdown_text or not markdown_text.strip():
         print_info(f"{title}：无内容")
         return
 
     cleaned = _simplify_latex(markdown_text)
+    PAGE_SIZE = 2000
 
+    if len(cleaned) <= PAGE_SIZE:
+        _render_chunk(title, cleaned)
+        return
+
+    # 长内容：分页显示
+    pos = 0
+    page = 1
+    while pos < len(cleaned):
+        chunk = cleaned[pos:pos + PAGE_SIZE]
+        chunk_title = title if page == 1 else f"{title}（续）"
+        _render_chunk(chunk_title, chunk)
+
+        pos += PAGE_SIZE
+        if pos >= len(cleaned):
+            break
+
+        # 短提示，选择后清除行
+        print(f"{Fore.YELLOW}[回车继续 | a全部 | q退出]{Style.RESET_ALL}", end="", flush=True)
+        choice = input().strip().lower()
+        print("\x1b[1A\x1b[K", end="", flush=True)  # 上移一行并清除
+        if choice == 'q':
+            break
+        if choice == 'a':
+            if pos < len(cleaned):
+                _render_chunk(f"{title}（续）", cleaned[pos:])
+            break
+        page += 1
+
+
+def _render_chunk(title: str, text: str) -> None:
+    """渲染单块内容（rich 优先，降级纯文本）"""
     if _HAS_RICH:
         print_section(title)
         try:
-            md = Markdown(cleaned)
+            md = Markdown(text)
             _console.print(md)
             print()
             return
         except Exception:
             pass
-
     # 降级方案
     print_section(title)
-    print(f"  {cleaned[:2000]}")
-    if len(cleaned) > 2000:
-        print(f"  {Fore.YELLOW}... (内容过长，共 {len(cleaned)} 字符){Style.RESET_ALL}")
+    print(f"  {text}")
     print()
 
 
@@ -221,7 +312,8 @@ def cmd_home(args: list[str]) -> None:
             print_section("最新动态")
             for i, item in enumerate(data["feed"][:10], 1):
                 print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
-                      f"{Fore.GREEN}{item['username']}{Style.RESET_ALL} "
+                      f"{_colorize(item['username'], '')}"
+                      f"{_get_note_for(item.get('uid', ''))} "
                       f"({item['time']})")
                 print(f"    {item['content'][:80]}{'...' if len(item['content']) > 80 else ''}")
         if not data:
@@ -263,8 +355,8 @@ def cmd_feed(args: list[str]) -> None:
         for i, item in enumerate(items, start):
             # 打印单条犇犇（无 post_id 链接）
             print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
-                  f"{Fore.GREEN}{item['username']}{Style.RESET_ALL} "
-                  f"({item.get('uid', '?')})  "
+                  f"{_colorize(item['username'], '')}"
+                  f"{_get_note_for(item.get('uid', '?'))}  "
                   f"{Fore.BLUE}{item.get('time', '')}{Style.RESET_ALL}")
             content = item.get("content", "")
             for line in content.split("\n"):
@@ -369,12 +461,75 @@ def cmd_discuss(args: list[str]) -> None:
 
     d = result["data"]
     print(f"\n  {Fore.CYAN}{Style.BRIGHT}{d['title']}{Style.RESET_ALL}")
-    print(f"  {Fore.GREEN}{d['author']}{Style.RESET_ALL}  "
+    print(f"  {_colorize(d['author'], d.get('author_color', ''))}"
+          f"{_get_note_for(str(d.get('author_uid', '')))}  "
           f"|  {d['time']}  |  {Fore.YELLOW}{d['forum']}{Style.RESET_ALL}  "
           f"|  {d['replyCount']} 条回复")
     print()
 
     _render_markdown("讨论内容", d.get("content", ""))
+
+    reply_count = d.get("replyCount", 0)
+    if reply_count > 0:
+        _show_replies(did, reply_count)
+
+
+def _show_replies(discuss_id: str, total_replies: int) -> None:
+    """浏览讨论回复（分页）"""
+    page = 1
+    per_page = 10
+    max_pages = max(1, (total_replies + per_page - 1) // per_page)
+
+    while True:
+        print_info(f"正在获取回复（第 {page}/{max_pages} 页）...")
+        result = view_discuss_replies(discuss_id, page)
+
+        if result["code"] != 200:
+            print_error(f"获取回复失败：{result['msg']}")
+            return
+
+        data = result["data"]
+        items = data["items"]
+        total_count = data.get("totalCount", total_replies)
+
+        if not items:
+            if page == 1:
+                print_info("暂无回复")
+            return
+
+        print_header(f"回复列表（第 {page}/{max_pages} 页 · 共 {total_count} 条）")
+        for item in items:
+            print(f"\n  {_colorize(item['author'], item.get('color', ''))}"
+                  f"{_get_note_for(item.get('author_uid', '?'))}  "
+                  f"{Fore.BLUE}{item.get('time', '')}{Style.RESET_ALL}")
+            content = item.get("content", "").strip()
+            if content:
+                for line in content.split("\n"):
+                    print(f"      {line}")
+            print_divider()
+
+        has_more = page < max_pages and len(items) >= per_page
+        if not has_more:
+            print_success(f"共 {total_count} 条回复（已全部加载）")
+            break
+        else:
+            print_info(f"第 {page}/{max_pages} 页 · 共 {total_count} 条回复")
+            choice = input(
+                f"{Fore.CYAN}输入 y 加载下一页，输入数字跳转页数，按回车结束：{Style.RESET_ALL}"
+            ).strip().lower()
+            if not choice:
+                break
+            if choice == 'y':
+                page += 1
+                continue
+            try:
+                p = int(choice)
+                if 1 <= p <= max_pages:
+                    page = p
+                else:
+                    print_error(f"页数超出范围（应为 1-{max_pages}）")
+            except ValueError:
+                print_error("无效输入，请输入 y、数字或回车")
 
 
 def cmd_article(args: list[str]) -> None:
@@ -397,12 +552,66 @@ def cmd_article(args: list[str]) -> None:
 
     d = result["data"]
     print(f"\n  {Fore.CYAN}{Style.BRIGHT}{d['title']}{Style.RESET_ALL}")
-    print(f"  {Fore.GREEN}{d['author']}{Style.RESET_ALL}  "
+    print(f"  {_colorize(d['author'], d.get('author_color', ''))}"
+          f"{_get_note_for(str(d.get('author_uid', '')))}  "
           f"|  {d['time']}  |  {Fore.YELLOW}{d['category']}{Style.RESET_ALL}")
     print(f"  赞 {d['upvote']}  |  回复 {d['replyCount']}  |  收藏 {d['favorCount']}")
     print()
 
     _render_markdown("文章内容", d.get("content", ""))
+
+    reply_count = d.get("replyCount", 0)
+    if reply_count > 0:
+        _show_article_replies(aid)
+
+
+def _show_article_replies(article_id: str) -> None:
+    """浏览文章回复（游标分页）"""
+    after = ""
+    total_shown = 0
+
+    while True:
+        print_info("正在获取回复..." + (f"（已加载 {total_shown} 条）" if total_shown else ""))
+        result = view_article_replies(article_id, after)
+
+        if result["code"] != 200:
+            print_error(f"获取回复失败：{result['msg']}")
+            return
+
+        data = result["data"]
+        items = data["items"]
+        next_after = data.get("after", "")
+
+        if not items:
+            if total_shown == 0:
+                print_info("暂无回复")
+            else:
+                print_success(f"共加载 {total_shown} 条回复（已全部加载）")
+            return
+
+        if total_shown == 0:
+            print_header("回复列表")
+
+        for item in items:
+            total_shown += 1
+            print(f"\n  #{total_shown} {_colorize(item['author'], item.get('color', ''))}"
+                  f"{_get_note_for(item.get('author_uid', '?'))}  "
+                  f"{Fore.BLUE}{item.get('time', '')}{Style.RESET_ALL}")
+            content = item.get("content", "").strip()
+            if content:
+                for line in content.split("\n"):
+                    print(f"      {line}")
+            print_divider()
+
+        if not next_after or len(items) < 20:
+            print_success(f"共加载 {total_shown} 条回复（已全部加载）")
+            break
+
+        print_info(f"已加载 {total_shown} 条回复")
+        choice = input(f"{Fore.CYAN}输入 y 加载更多，按回车结束：{Style.RESET_ALL}").strip().lower()
+        if choice != 'y':
+            break
+        after = next_after
 
 
 def cmd_discusses(args: list[str]) -> None:
@@ -442,8 +651,8 @@ def cmd_discusses(args: list[str]) -> None:
             if item.get("topped"):
                 prefix = f"{Fore.MAGENTA}[置顶]{Style.RESET_ALL} "
             print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
-                  f"{Fore.GREEN}{item['username']}{Style.RESET_ALL}  "
-                  f"({item.get('uid', '?')})  "
+                  f"{_colorize(item['username'], item.get('color', ''))}"
+                  f"{_get_note_for(item.get('uid', '?'))}  "
                   f"{Fore.BLUE}{item.get('time', '')}{Style.RESET_ALL}"
                   f"  {Fore.CYAN}{item.get('replyCount', 0)} 回复{Style.RESET_ALL}")
             print(f"      {prefix}{Fore.YELLOW}[{item.get('forum', '')}]{Style.RESET_ALL} "
@@ -517,8 +726,8 @@ def cmd_articles(args: list[str]) -> None:
         start = len(all_items) + 1
         for i, item in enumerate(items, start):
             print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
-                  f"{Fore.GREEN}{item['author']}{Style.RESET_ALL}  "
-                  f"({item.get('author_uid', '?')})  "
+                  f"{_colorize(item['author'], item.get('color', ''))}"
+                  f"{_get_note_for(item.get('author_uid', '?'))}  "
                   f"{Fore.BLUE}{item.get('time', '')}{Style.RESET_ALL}"
                   f"  {Fore.CYAN}赞 {item.get('upvote', 0)}  "
                   f"{item.get('replyCount', 0)} 回复{Style.RESET_ALL}")
@@ -556,6 +765,343 @@ def cmd_articles(args: list[str]) -> None:
                 print_error(f"序号超出范围（应为 1-{total}）")
         except ValueError:
             print_error("无效输入，请输入 y、数字序号或回车")
+
+
+def cmd_punch(args: list[str]) -> None:
+    """执行每日打卡"""
+    print_header("每日打卡")
+    print_info("正在检测打卡状态...")
+    status = check_punch_status()
+    if status.get("code") == 401:
+        print_warning("未登录，请先执行 login")
+        return
+    if status.get("checked_in"):
+        print_success("今日已打卡，无需重复操作")
+        return
+    print_info("尚未打卡，正在打卡...")
+    result = do_punch()
+    if result["success"]:
+        print_success(result["msg"])
+    else:
+        print_error(result["msg"])
+
+
+def cmd_problems(args: list[str]) -> None:
+    """浏览题目列表"""
+    page = 1
+    all_items = []
+    total_count = None
+
+    while True:
+        print_header("题目列表")
+        print_info("正在获取...")
+        result = view_problem_list(page, "", "")
+
+        if result["code"] == 401:
+            print_warning("未登录，请先执行 login")
+            return
+        elif result["code"] != 200:
+            print_error(f"获取失败：{result['msg']}")
+            return
+
+        data = result["data"]
+        items = data["items"]
+        per_page = data.get("perPage", 50)
+        total_count = data.get("totalCount", 0)
+        max_pages = max(1, (total_count + per_page - 1) // per_page) if total_count else 1
+
+        if not items:
+            print_warning("未找到题目")
+            return
+
+        start = len(all_items) + 1
+        for i, p in enumerate(items, start):
+            rate = f"{p['accepted'] / p['submitted'] * 100:.0f}%" if p.get("submitted") else "0%"
+            print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
+                  f"{Fore.CYAN}{p['pid']}{Style.RESET_ALL}  "
+                  f"{Fore.GREEN}{p['name']}{Style.RESET_ALL}")
+            print(f"      {Fore.BLUE}{p['difficulty']}{Style.RESET_ALL}  |  "
+                  f"提交 {p.get('submitted', 0):,}  |  "
+                  f"通过 {p.get('accepted', 0):,}  |  "
+                  f"通过率 {rate}")
+            if p.get("tags"):
+                tags = ", ".join(p["tags"][:5])
+                print(f"      {Fore.MAGENTA}标签: {tags}{Style.RESET_ALL}")
+
+        print()
+
+        all_items.extend(items)
+        total = len(all_items)
+
+        has_more = page < max_pages and len(items) > 0
+        if not has_more:
+            print_success(f"共 {total_count} 题，已显示 {total}")
+            choice = input(
+                f"{Fore.CYAN}输入数字(#1~#{total})查看题目，回车结束：{Style.RESET_ALL}"
+            ).strip()
+        else:
+            print_info(f"第 {page}/{max_pages} 页 · 共 {total_count} 题")
+            choice = input(
+                f"{Fore.CYAN}y下一页 | 数字查看题目 | 回车结束：{Style.RESET_ALL}"
+            ).strip().lower()
+
+        if not choice:
+            break
+        if choice == 'y' and has_more:
+            page += 1
+            continue
+        try:
+            idx = int(choice)
+            if 1 <= idx <= total:
+                pid = all_items[idx - 1]["pid"]
+                cmd_problem([str(pid)])
+                return
+            else:
+                print_error(f"序号超出范围（应为 1-{total}）")
+        except ValueError:
+            print_error("无效输入")
+
+
+def cmd_search(args: list[str]) -> None:
+    """搜索题目"""
+    keyword = args[0] if args else ""
+    if not keyword:
+        keyword = input(f"{Fore.CYAN}关键词：{Style.RESET_ALL}").strip()
+        if not keyword:
+            print_error("请输入关键词")
+            return
+    diff_input = args[1] if len(args) > 1 else ""
+
+    print_header(f"搜索题目：{keyword}")
+    if not diff_input:
+        print_info("难度格式: 1|2  (1入门 2普及- 3普及/提高- 4普及+/提高 5提高+/省选- 6省选/NOI- 7NOI)")
+        diff_input = input(f"{Fore.CYAN}难度（留空=全部）：{Style.RESET_ALL}").strip()
+
+    page = 1
+    all_items = []
+
+    while True:
+        print_info("正在搜索...")
+        result = view_problem_list(page, keyword, diff_input)
+
+        if result["code"] == 401:
+            print_warning("未登录，请先执行 login")
+            return
+        elif result["code"] != 200:
+            print_error(f"获取失败：{result['msg']}")
+            return
+
+        data = result["data"]
+        items = data["items"]
+        total_count = data.get("totalCount", 0)
+        per_page = data.get("perPage", 50)
+        max_pages = max(1, (total_count + per_page - 1) // per_page) if total_count else 1
+
+        if not items:
+            print_warning("未找到匹配的题目")
+            return
+
+        start = len(all_items) + 1
+        for i, p in enumerate(items, start):
+            rate = f"{p['accepted'] / p['submitted'] * 100:.0f}%" if p.get("submitted") else "0%"
+            print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
+                  f"{Fore.CYAN}{p['pid']}{Style.RESET_ALL}  "
+                  f"{Fore.GREEN}{p['name']}{Style.RESET_ALL}")
+            print(f"      {Fore.BLUE}{p['difficulty']}{Style.RESET_ALL}  |  "
+                  f"提交 {p.get('submitted', 0):,}  |  "
+                  f"通过 {p.get('accepted', 0):,}  |  "
+                  f"通过率 {rate}")
+
+        print()
+        all_items.extend(items)
+        total = len(all_items)
+
+        if page >= max_pages or len(items) == 0:
+            print_success(f"共找到 {total_count} 题，已显示 {total}")
+            choice = input(f"{Fore.CYAN}输入数字(#1~#{total})查看题目，回车结束：{Style.RESET_ALL}").strip()
+        else:
+            print_info(f"第 {page}/{max_pages} 页 · 共 {total_count} 题")
+            choice = input(f"{Fore.CYAN}y下一页 | 数字查看题目 | 回车结束：{Style.RESET_ALL}").strip().lower()
+
+        if not choice:
+            break
+        if choice == 'y':
+            page += 1
+            continue
+        try:
+            idx = int(choice)
+            if 1 <= idx <= total:
+                pid = all_items[idx - 1]["pid"]
+                cmd_problem([str(pid)])
+                return
+            else:
+                print_error(f"序号超出范围（应为 1-{total}）")
+        except ValueError:
+            print_error("无效输入")
+
+
+def cmd_judgement(args: list[str]) -> None:
+    """查看陶片放逐日志"""
+    print_header("陶片放逐")
+    print_info("少女祈祷中...")
+    result = view_judgement()
+
+    if result["code"] == 401:
+        print_warning("未登录，请先执行 login")
+        return
+    elif result["code"] != 200:
+        print_error(f"获取失败：{result['msg']}")
+        return
+
+    items = result["data"]["items"]
+    if not items:
+        print_warning("暂无处罚记录")
+        return
+
+    for i, entry in enumerate(items, 1):
+        print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
+              f"{_colorize(entry['username'], entry.get('color', ''), entry.get('uid', ''))}"
+              f"{_get_note_for(entry.get('uid', '?'))}  "
+              f"{Fore.BLUE}{entry.get('time', '')}{Style.RESET_ALL}")
+
+        for reason in entry.get("reasons", [entry.get("reason", "")]):
+            color = Fore.GREEN if not entry.get("is_punish") else Fore.RED
+            print(f"      {color}原因：{reason}{Style.RESET_ALL}")
+
+        added = entry.get("added", 0)
+        revoked = entry.get("revoked", 0)
+        if added or revoked:
+            parts = []
+            if revoked:
+                parts.append(f"{Fore.YELLOW}撤销 {_desc_perm(revoked)}{Style.RESET_ALL}")
+            if added:
+                parts.append(f"{Fore.RED}新增 {_desc_perm(added)}{Style.RESET_ALL}")
+            print(f"      {' | '.join(parts)}")
+
+    print()
+    print_success(f"共 {len(items)} 条记录（已按时间合并）")
+
+
+def _desc_perm(perm: int) -> str:
+    if perm == 0:
+        return "无"
+    parts = []
+    if perm & 1:
+        parts.append("封禁")
+    if perm & 131072:
+        parts.append("棕名")
+    if not parts:
+        return f"权限({perm})"
+    return "/".join(parts)
+
+
+def cmd_note(args: list[str]) -> None:
+    """管理用户备注"""
+    if not args:
+        print_error("用法: note <set|del|list> [UID] [备注内容]")
+        print_info("  note set <UID> <备注>")
+        print_info("  note del <UID>")
+        print_info("  note list")
+        return
+
+    sub = args[0].lower()
+    if sub == "list":
+        notes = load_user_notes()
+        if not notes:
+            print_info("暂无用户备注")
+            return
+        print_header("用户备注列表")
+        for uid, info in notes.items():
+            print(f"  {Fore.CYAN}UID:{uid}{Style.RESET_ALL} "
+                  f"{Fore.GREEN}{info.get('name', '?')}{Style.RESET_ALL} "
+                  f"→ {Fore.MAGENTA}{info.get('note', '')}{Style.RESET_ALL}")
+        return
+
+    if sub == "del":
+        if len(args) < 2:
+            print_error("用法: note del <UID>")
+            return
+        result = delete_user_note(args[1])
+        if result["success"]:
+            print_success(result["msg"])
+        else:
+            print_error(result["msg"])
+        return
+
+    if sub == "set":
+        if len(args) < 3:
+            print_error("用法: note set <UID> <备注>")
+            return
+        uid = args[1]
+        note_text = " ".join(args[2:])
+        result = save_user_note(uid, "", note_text)
+        if result["success"]:
+            print_success(result["msg"])
+        else:
+            print_error(result["msg"])
+        return
+
+    print_error(f"未知子命令: {sub}，可用: set, del, list")
+
+
+def cmd_verbose(args: list[str]) -> None:
+    """切换详细日志"""
+    import Server
+    Server.VERBOSE = not Server.VERBOSE
+    status = "开启" if Server.VERBOSE else "关闭"
+    print_success(f"详细日志已{status}")
+    if Server.VERBOSE:
+        print_info("现在会显示请求 URL 和响应摘要")
+
+
+def cmd_color(args: list[str]) -> None:
+    """管理用户自定义颜色"""
+    if not args:
+        print_error("用法: color <set|del|list> [UID] [颜色名]")
+        print_info("  可用颜色: Red Purple Orange Blue Green Cyan Gold Brown Gray")
+        return
+
+    sub = args[0].lower()
+    if sub == "list":
+        colors = load_user_colors()
+        if not colors:
+            print_info("暂无自定义颜色")
+            return
+        print_header("自定义颜色列表")
+        for uid, c in colors.items():
+            print(f"  {Fore.CYAN}UID:{uid}{Style.RESET_ALL} → {_LUOGU_COLOR_MAP.get(c, c)}{c}{Style.RESET_ALL}")
+        return
+
+    if sub == "del":
+        if len(args) < 2:
+            print_error("用法: color del <UID>")
+            return
+        result = delete_user_color(args[1])
+        if result["success"]:
+            print_success(result["msg"])
+        else:
+            print_error(result["msg"])
+        return
+
+    if sub == "set":
+        if len(args) < 3:
+            print_error("用法: color set <UID> <颜色名>")
+            print_info("  可用: Red Purple Orange Blue Green Cyan Gold Brown Gray")
+            return
+        uid = args[1]
+        color = args[2]
+        valid = {"Red", "Purple", "Orange", "Blue", "Green", "Cyan", "Gold", "Brown", "Gray"}
+        if color not in valid:
+            print_error(f"无效颜色: {color}，可用: {' '.join(sorted(valid))}")
+            return
+        result = save_user_color(uid, color)
+        if result["success"]:
+            print_success(result["msg"])
+        else:
+            print_error(result["msg"])
+        return
+
+    print_error(f"未知子命令: {sub}，可用: set, del, list")
 
 
 def cmd_logout(args: list[str]) -> None:
@@ -609,6 +1155,13 @@ COMMANDS: dict[str, tuple[str, callable]] = {
     "article":  ("查看文章 <ID>", cmd_article),
     "articles": ("查看最新文章（可翻页选择）", cmd_articles),
     "logout":   ("退出登录(清除Cookie)", cmd_logout),
+    "punch":    ("每日打卡", cmd_punch),
+    "problems": ("题目列表", cmd_problems),
+    "search":   ("搜索题目", cmd_search),
+    "judgement":("陶片放逐（处罚日志）", cmd_judgement),
+    "note":     ("管理用户备注", cmd_note),
+    "color":    ("管理用户自定义颜色", cmd_color),
+    "verbose":  ("切换详细日志", cmd_verbose),
     "help":     ("显示帮助信息", cmd_help),
     "exit":     ("退出程序", cmd_exit),
     "quit":     ("退出程序", cmd_exit),
@@ -629,6 +1182,13 @@ ALIASES = {
     "a": "article",
     "art": "article",
     "as": "articles",
+    "pk": "punch",
+    "ps": "problems",
+    "sh": "search",
+    "jd": "judgement",
+    "nt": "note",
+    "cl": "color",
+    "vb": "verbose",
 }
 
 
@@ -639,7 +1199,23 @@ def main():
     print(f"╚{'═'*40}╝{Style.RESET_ALL}")
 
     if is_logged_in():
-        print_success("检测到已保存的登录状态\n")
+        print_success("检测到已保存的登录状态")
+        # 检查打卡状态
+        try:
+            status = check_punch_status()
+            if status.get("code") == 200 and not status.get("checked_in"):
+                choice = input(
+                    f"{Fore.YELLOW}今天还没打卡，要打卡吗？(y/n)：{Style.RESET_ALL}"
+                ).strip().lower()
+                if choice == 'y':
+                    result = do_punch()
+                    if result["success"]:
+                        print_success(result["msg"])
+                    else:
+                        print_error(result["msg"])
+        except Exception:
+            pass
+        print()
     else:
         print_info("当前未登录，请先执行 login\n")
 
