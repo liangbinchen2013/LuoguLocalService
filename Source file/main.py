@@ -24,6 +24,10 @@ from Server import (
     get_home,
     clear_cookie,
     is_logged_in,
+    get_current_user,
+    list_sessions,
+    get_session_users,
+    switch_session,
     view_feed,
     load_more_feed,
     view_problem,
@@ -77,7 +81,7 @@ def print_header(title: str) -> None:
     print(f"{'='*50}{Style.RESET_ALL}")
 
 def print_success(msg: str) -> None:
-    print(f"{Fore.GREEN}[✓] {msg}{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}[√] {msg}{Style.RESET_ALL}")
 
 def print_error(msg: str) -> None:
     print(f"{Fore.RED}[×] {msg}{Style.RESET_ALL}")
@@ -86,14 +90,14 @@ def print_warning(msg: str) -> None:
     print(f"{Fore.YELLOW}[!] {msg}{Style.RESET_ALL}")
 
 def print_info(msg: str) -> None:
-    print(f"{Fore.BLUE}[ℹ] {msg}{Style.RESET_ALL}")
+    print(f"{Fore.BLUE}[i] {msg}{Style.RESET_ALL}")
 
 def print_field(label: str, value: str, indent: int = 2) -> None:
     prefix = " " * indent
     print(f"{prefix}{Fore.CYAN}{label}:{Style.RESET_ALL} {value}")
 
 def print_section(title: str) -> None:
-    print(f"\n{Fore.MAGENTA}── {title} ──{Style.RESET_ALL}")
+    print(f"\n{Fore.MAGENTA}{'-'*4} {title} {'-'*4}{Style.RESET_ALL}")
 
 def print_divider() -> None:
     print(f"{Fore.BLUE}{'-'*40}{Style.RESET_ALL}")
@@ -155,28 +159,29 @@ def _simplify_latex(text: str) -> str:
 
 
 def _render_markdown(title: str, markdown_text: str) -> None:
-    """渲染 Markdown，长内容自动分页"""
+    """渲染 Markdown，长内容按行分页（默认 30 行，空行也算）"""
     if not markdown_text or not markdown_text.strip():
         print_info(f"{title}：无内容")
         return
 
     cleaned = _simplify_latex(markdown_text)
-    PAGE_SIZE = 2000
+    PAGE_LINES = 30
+    lines = cleaned.split("\n")
 
-    if len(cleaned) <= PAGE_SIZE:
+    if len(lines) <= PAGE_LINES:
         _render_chunk(title, cleaned)
         return
 
-    # 长内容：分页显示
+    # 长内容：按行分页显示
     pos = 0
     page = 1
-    while pos < len(cleaned):
-        chunk = cleaned[pos:pos + PAGE_SIZE]
+    while pos < len(lines):
+        chunk = "\n".join(lines[pos:pos + PAGE_LINES])
         chunk_title = title if page == 1 else f"{title}（续）"
         _render_chunk(chunk_title, chunk)
 
-        pos += PAGE_SIZE
-        if pos >= len(cleaned):
+        pos += PAGE_LINES
+        if pos >= len(lines):
             break
 
         # 短提示，选择后清除行
@@ -186,8 +191,8 @@ def _render_markdown(title: str, markdown_text: str) -> None:
         if choice == 'q':
             break
         if choice == 'a':
-            if pos < len(cleaned):
-                _render_chunk(f"{title}（续）", cleaned[pos:])
+            if pos < len(lines):
+                _render_chunk(f"{title}（续）", "\n".join(lines[pos:]))
             break
         page += 1
 
@@ -232,7 +237,10 @@ def cmd_login(args: list[str]) -> None:
     password = ""  # 清除内存中的密码
 
     if result["code"] == 200:
-        print_success("登录成功，Cookie 已本地保存")
+        print_success(f"登录成功（用户: {username}），Cookie 已加密保存")
+        count = len(list_sessions())
+        if count > 1:
+            print_info(f"当前共 {count} 个会话，可用 switch 切换用户")
     elif result["code"] == 400:
         print_error(f"登录失败：{result['msg']}")
     else:
@@ -378,10 +386,12 @@ def cmd_feed(args: list[str]) -> None:
 def cmd_problem(args: list[str]) -> None:
     """查看题目预览"""
     if not args:
-        print_error("用法: problem <题目ID>  例如: problem P1000")
-        return
-
-    pid = args[0].upper()
+        pid = input(f"{Fore.CYAN}题目ID（如 P1000）：{Style.RESET_ALL}").strip().upper()
+        if not pid:
+            print_error("题目ID不能为空")
+            return
+    else:
+        pid = args[0].upper()
     print_header(f"题目预览：{pid}")
     print_info("正在获取题目...")
     result = view_problem(pid)
@@ -444,10 +454,12 @@ def cmd_problem(args: list[str]) -> None:
 def cmd_discuss(args: list[str]) -> None:
     """查看讨论帖"""
     if not args:
-        print_error("用法: discuss <讨论ID>  例如: discuss 962230")
-        return
-
-    did = args[0]
+        did = input(f"{Fore.CYAN}讨论ID（如 962230）：{Style.RESET_ALL}").strip()
+        if not did:
+            print_error("讨论ID不能为空")
+            return
+    else:
+        did = args[0]
     print_header(f"讨论帖：{did}")
     print_info("正在获取讨论...")
     result = view_discuss(did)
@@ -535,10 +547,12 @@ def _show_replies(discuss_id: str, total_replies: int) -> None:
 def cmd_article(args: list[str]) -> None:
     """查看文章"""
     if not args:
-        print_error("用法: article <文章ID>  例如: article qzywo77y")
-        return
-
-    aid = args[0]
+        aid = input(f"{Fore.CYAN}文章ID（如 qzywo77y）：{Style.RESET_ALL}").strip()
+        if not aid:
+            print_error("文章ID不能为空")
+            return
+    else:
+        aid = args[0]
     print_header(f"文章：{aid}")
     print_info("正在获取文章...")
     result = view_article(aid)
@@ -777,13 +791,34 @@ def cmd_punch(args: list[str]) -> None:
         return
     if status.get("checked_in"):
         print_success("今日已打卡，无需重复操作")
+        _show_fortune()
         return
     print_info("尚未打卡，正在打卡...")
     result = do_punch()
     if result["success"]:
         print_success(result["msg"])
+        _show_fortune()
     else:
         print_error(result["msg"])
+
+
+def _show_fortune() -> None:
+    """显示今日运势"""
+    print_info("正在获取今日运势...")
+    result = get_home()
+    if result["code"] == 200:
+        data = result["data"]
+        fortune = data.get("fortune")
+        if fortune:
+            print_section("今日运势")
+            if "result" in fortune:
+                print_field("运势", fortune["result"], indent=4)
+            if "do" in fortune:
+                for item in fortune["do"]:
+                    print_field("宜", f"{item['activity']} —— {item['detail']}", indent=4)
+            if "dont" in fortune:
+                for item in fortune["dont"]:
+                    print_field("忌", f"{item['activity']} —— {item['detail']}", indent=4)
 
 
 def cmd_problems(args: list[str]) -> None:
@@ -940,6 +975,22 @@ def cmd_search(args: list[str]) -> None:
             print_error("无效输入")
 
 
+def _judgement_reason_color(reason: str, is_punish: bool) -> str:
+    """根据原因内容判断显示颜色，覆盖 is_punish 标志"""
+    NON_PUNISH_REASONS = {
+        "上传站外图片", "上传站外头像", "上传可站外头像",
+        "题库志愿者轮换", "题库志愿者轮换，感谢贡献",
+        "数学内容审核员轮换", "专区/志愿轮换", "专区/志愿轮换，感谢贡献",
+    }
+    PUNISH_KEYWORDS = ["棕名", "封禁", "违规", "学术不端"]
+
+    if reason in NON_PUNISH_REASONS:
+        return Fore.GREEN
+    if any(kw in reason for kw in PUNISH_KEYWORDS):
+        return Fore.RED
+    return Fore.RED if is_punish else Fore.GREEN
+
+
 def cmd_judgement(args: list[str]) -> None:
     """查看陶片放逐日志"""
     print_header("陶片放逐")
@@ -959,13 +1010,25 @@ def cmd_judgement(args: list[str]) -> None:
         return
 
     for i, entry in enumerate(items, 1):
-        print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
-              f"{_colorize(entry['username'], entry.get('color', ''), entry.get('uid', ''))}"
-              f"{_get_note_for(entry.get('uid', '?'))}  "
-              f"{Fore.BLUE}{entry.get('time', '')}{Style.RESET_ALL}")
+        users = entry.get("users", [])
+        if users:
+            user_strs = []
+            for u in users:
+                uid_str = str(u.get("uid", "?"))
+                name_part = _colorize(u["username"], u.get("color", ""), uid_str)
+                note_part = _get_note_for(uid_str)
+                user_strs.append(f"{name_part}{note_part}")
+            print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL} "
+                  f"{', '.join(user_strs)}  "
+                  f"{Fore.BLUE}{entry.get('time', '')}{Style.RESET_ALL}"
+                  f"{Fore.CYAN}  [{len(users)} 人]{Style.RESET_ALL}")
+        else:
+            # 兼容旧格式
+            print(f"\n  {Fore.YELLOW}#{i}{Style.RESET_ALL}  "
+                  f"{Fore.BLUE}{entry.get('time', '')}{Style.RESET_ALL}")
 
         for reason in entry.get("reasons", [entry.get("reason", "")]):
-            color = Fore.GREEN if not entry.get("is_punish") else Fore.RED
+            color = _judgement_reason_color(reason, entry.get("is_punish", True))
             print(f"      {color}原因：{reason}{Style.RESET_ALL}")
 
         added = entry.get("added", 0)
@@ -979,7 +1042,7 @@ def cmd_judgement(args: list[str]) -> None:
             print(f"      {' | '.join(parts)}")
 
     print()
-    print_success(f"共 {len(items)} 条记录（已按时间合并）")
+    print_success(f"共 {len(items)} 条记录（已按时间+处罚合并）")
 
 
 def _desc_perm(perm: int) -> str:
@@ -1018,10 +1081,13 @@ def cmd_note(args: list[str]) -> None:
         return
 
     if sub == "del":
-        if len(args) < 2:
-            print_error("用法: note del <UID>")
+        uid = args[1] if len(args) >= 2 else ""
+        if not uid:
+            uid = input(f"{Fore.CYAN}要删除备注的 UID：{Style.RESET_ALL}").strip()
+        if not uid:
+            print_error("UID 不能为空")
             return
-        result = delete_user_note(args[1])
+        result = delete_user_note(uid)
         if result["success"]:
             print_success(result["msg"])
         else:
@@ -1029,11 +1095,18 @@ def cmd_note(args: list[str]) -> None:
         return
 
     if sub == "set":
-        if len(args) < 3:
-            print_error("用法: note set <UID> <备注>")
+        uid = args[1] if len(args) >= 2 else ""
+        if not uid:
+            uid = input(f"{Fore.CYAN}UID：{Style.RESET_ALL}").strip()
+        if not uid:
+            print_error("UID 不能为空")
             return
-        uid = args[1]
-        note_text = " ".join(args[2:])
+        note_text = " ".join(args[2:]) if len(args) >= 3 else ""
+        if not note_text:
+            note_text = input(f"{Fore.CYAN}备注内容：{Style.RESET_ALL}").strip()
+        if not note_text:
+            print_error("备注内容不能为空")
+            return
         result = save_user_note(uid, "", note_text)
         if result["success"]:
             print_success(result["msg"])
@@ -1073,10 +1146,13 @@ def cmd_color(args: list[str]) -> None:
         return
 
     if sub == "del":
-        if len(args) < 2:
-            print_error("用法: color del <UID>")
+        uid = args[1] if len(args) >= 2 else ""
+        if not uid:
+            uid = input(f"{Fore.CYAN}UID：{Style.RESET_ALL}").strip()
+        if not uid:
+            print_error("UID 不能为空")
             return
-        result = delete_user_color(args[1])
+        result = delete_user_color(uid)
         if result["success"]:
             print_success(result["msg"])
         else:
@@ -1084,12 +1160,15 @@ def cmd_color(args: list[str]) -> None:
         return
 
     if sub == "set":
-        if len(args) < 3:
-            print_error("用法: color set <UID> <颜色名>")
-            print_info("  可用: Red Purple Orange Blue Green Cyan Gold Brown Gray")
+        uid = args[1] if len(args) >= 2 else ""
+        if not uid:
+            uid = input(f"{Fore.CYAN}UID：{Style.RESET_ALL}").strip()
+        if not uid:
+            print_error("UID 不能为空")
             return
-        uid = args[1]
-        color = args[2]
+        color = args[2] if len(args) >= 3 else ""
+        if not color:
+            color = input(f"{Fore.CYAN}颜色名（Red Purple Orange Blue Green Cyan Gold Brown Gray）：{Style.RESET_ALL}").strip()
         valid = {"Red", "Purple", "Orange", "Blue", "Green", "Cyan", "Gold", "Brown", "Gray"}
         if color not in valid:
             print_error(f"无效颜色: {color}，可用: {' '.join(sorted(valid))}")
@@ -1105,20 +1184,101 @@ def cmd_color(args: list[str]) -> None:
 
 
 def cmd_logout(args: list[str]) -> None:
-    """退出登录"""
+    """退出登录（可指定用户名）"""
     print_header("退出登录")
-    if not is_logged_in():
-        print_info("当前未登录")
+    if args:
+        # 退出指定用户
+        target = args[0]
+        users = list_sessions()
+        if target not in users:
+            print_error(f"未找到用户 {target} 的会话")
+            print_info(f"当前已登录用户: {', '.join(users) if users else '无'}")
+            return
+        confirm = input(f"确定要清除用户 {Fore.CYAN}{target}{Style.RESET_ALL} 的登录状态吗？(y/n)：").strip().lower()
+        if confirm == "y":
+            result = clear_cookie(target)
+            if result["status"]:
+                print_success(result["msg"])
+            else:
+                print_error(result["msg"])
+        else:
+            print_info("已取消")
         return
-    confirm = input("确定要清除登录状态吗？(y/n)：").strip().lower()
+
+    # 退出当前用户
+    current = get_current_user()
+    if not current:
+        print_info("当前未登录")
+        sessions = list_sessions()
+        if sessions:
+            print_info(f"已保存的会话: {', '.join(sessions)}")
+            print_info("使用 logout <用户名> 清除指定会话")
+        return
+    confirm = input(f"确定要清除当前用户 {Fore.CYAN}{current}{Style.RESET_ALL} 的登录状态吗？(y/n)：").strip().lower()
     if confirm == "y":
         result = clear_cookie()
         if result["status"]:
-            print_success("已退出登录，Cookie 已清除")
+            print_success(result["msg"])
         else:
             print_error(result["msg"])
     else:
         print_info("已取消")
+
+
+def cmd_sessions(args: list[str]) -> None:
+    """列出所有已保存的会话"""
+    users = get_session_users()
+    if not users:
+        print_info("没有已保存的会话")
+        return
+    print_header("已保存的会话")
+    for u in users:
+        tag = f" {Fore.GREEN}← 当前{Style.RESET_ALL}" if u.get("current") else ""
+        print(f"  {Fore.CYAN}{u['username']}{Style.RESET_ALL}{tag}")
+    print()
+    print_success(f"共 {len(users)} 个会话")
+
+
+def cmd_switch(args: list[str]) -> None:
+    """切换当前用户"""
+    sessions = list_sessions()
+    if not sessions:
+        print_warning("没有已保存的会话，请先 login")
+        return
+    current = get_current_user()
+    print_header("切换用户")
+    for i, user in enumerate(sessions, 1):
+        tag = f" {Fore.GREEN}← 当前{Style.RESET_ALL}" if user == current else ""
+        print(f"  {Fore.YELLOW}#{i}{Style.RESET_ALL} {Fore.CYAN}{user}{Style.RESET_ALL}{tag}")
+    print()
+
+    if args and args[0] in sessions:
+        target = args[0]
+    else:
+        inp = input(f"{Fore.CYAN}输入序号或用户名切换，回车取消：{Style.RESET_ALL}").strip()
+        if not inp:
+            print_info("已取消")
+            return
+        sessions_list = list(sessions)
+        try:
+            idx = int(inp)
+            if 1 <= idx <= len(sessions_list):
+                target = sessions_list[idx - 1]
+            else:
+                print_error(f"序号超出范围（应为 1-{len(sessions_list)}）")
+                return
+        except ValueError:
+            if inp in sessions:
+                target = inp
+            else:
+                print_error(f"未知用户: {inp}")
+                return
+
+    result = switch_session(target)
+    if result["success"]:
+        print_success(result["msg"])
+    else:
+        print_error(result["msg"])
 
 
 def cmd_help(args: list[str]) -> None:
@@ -1138,6 +1298,71 @@ def cmd_exit(args: list[str]) -> None:
     """退出程序"""
     print_info("程序退出，再见！")
     sys.exit(0)
+
+
+# ==============================================
+# 免责声明
+# ==============================================
+
+DISCLAIMER_FILE = "disclaimer_accepted"
+DISCLAIMER_PATH = "DISCLAIMER.md"
+
+
+def _show_disclaimer() -> bool:
+    """
+    显示免责声明与隐私声明（首次使用 / 版本更新时）。
+    返回 True 表示用户同意，False 表示拒绝。
+    """
+    try:
+        with open(DISCLAIMER_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return True
+
+    current_version = VERSION.replace("v", "")
+
+    if os.path.exists(DISCLAIMER_FILE):
+        try:
+            with open(DISCLAIMER_FILE, "r", encoding="utf-8") as f:
+                accepted_version = f.read().strip()
+            if accepted_version == current_version:
+                return True
+        except Exception:
+            pass
+
+    # 直接渲染全量内容，不走分页逻辑（避免双 input 冲突）
+    cleaned = _simplify_latex(content)
+    _render_chunk("免责声明与隐私声明", cleaned)
+
+    print(f"{Fore.YELLOW}{'─'*50}{Style.RESET_ALL}")
+    while True:
+        choice = input(
+            f"{Fore.CYAN}请输入 y（同意并继续）/ n（拒绝并退出）：{Style.RESET_ALL}"
+        ).strip().lower()
+        if choice == "y":
+            try:
+                with open(DISCLAIMER_FILE, "w", encoding="utf-8") as f:
+                    f.write(current_version)
+            except Exception:
+                pass
+            return True
+        elif choice == "n":
+            print_error("您已拒绝免责声明，程序退出。")
+            print_info("如改变主意，请删除 disclaimer_accepted 文件后重新运行。")
+            return False
+        else:
+            print_warning("请输入 y 或 n")
+
+
+def cmd_disclaimer(args: list[str]) -> None:
+    """查看免责声明与隐私声明"""
+    print_header("免责声明与隐私声明")
+    try:
+        with open(DISCLAIMER_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        _render_markdown("免责声明与隐私声明", content)
+    except FileNotFoundError:
+        print_warning("免责声明文件不存在")
 
 
 # ==============================================
@@ -1162,6 +1387,9 @@ COMMANDS: dict[str, tuple[str, callable]] = {
     "note":     ("管理用户备注", cmd_note),
     "color":    ("管理用户自定义颜色", cmd_color),
     "verbose":  ("切换详细日志", cmd_verbose),
+    "sessions": ("列出所有已保存的会话", cmd_sessions),
+    "switch":   ("切换当前用户", cmd_switch),
+    "disclaimer": ("查看免责声明与隐私声明", cmd_disclaimer),
     "help":     ("显示帮助信息", cmd_help),
     "exit":     ("退出程序", cmd_exit),
     "quit":     ("退出程序", cmd_exit),
@@ -1189,17 +1417,31 @@ ALIASES = {
     "nt": "note",
     "cl": "color",
     "vb": "verbose",
+    "ss": "sessions",
+    "sw": "switch",
+    "users": "sessions",
+    "account": "switch",
 }
 
 
 def main():
+    # ---- 首次使用：显示免责声明 ----
+    if not _show_disclaimer():
+        sys.exit(0)
+
     print(f"\n{Style.BRIGHT}{Fore.CYAN}╔{'═'*40}╗")
     print(f"║{' ' * 12}洛谷命令行工具{' ' * 13}║")
     print(f"║{' ' * 15}{VERSION}{' ' * 16}║")
     print(f"╚{'═'*40}╝{Style.RESET_ALL}")
 
+    current_user = get_current_user()
+    if current_user:
+        sessions = list_sessions()
+        if len(sessions) > 1:
+            print_info(f"当前用户: {current_user}  （共 {len(sessions)} 个会话，switch 切换）")
+        else:
+            print_info(f"当前用户: {current_user}")
     if is_logged_in():
-        print_success("检测到已保存的登录状态")
         # 检查打卡状态
         try:
             status = check_punch_status()

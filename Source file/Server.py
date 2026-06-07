@@ -25,7 +25,7 @@ from urllib.parse import quote
 
 
 # 版本号
-VERSION = "v1.1.0"
+VERSION = "v1.0.0"
 
 # 详细日志开关
 VERBOSE = False
@@ -49,8 +49,10 @@ class Config:
     # OCR配置
     OCR_API = "https://ocr.lbcoj.top/"
     CAPTCHA_PATH = "ocr.jpg"
-    # Cookie持久化
+    # Cookie持久化（旧版，单用户）
     COOKIE_SAVE_PATH = "luogu_cookies.json"
+    # 会话持久化（新版，多用户 + Base64 编码）
+    SESSIONS_PATH = "luogu_sessions.json"
     # 默认访问地址
     DEFAULT_VIEW_URL = "https://www.luogu.com.cn/user/1432496"
     # 犇犇API
@@ -89,28 +91,101 @@ def refresh_c3vk(session: requests.Session) -> bool:
 
 
 # ==============================================
-# 【模块4：Cookie 保存/加载】
+# 【模块4：多用户会话管理（Base64 编码）】
 # ==============================================
-def save_cookie(session: requests.Session) -> dict:
-    """将会话 Cookie 持久化到本地文件"""
+
+def _migrate_old_cookie() -> bool:
+    """将旧版 luogu_cookies.json 迁移到新版多用户会话格式"""
+    if not os.path.exists(Config.COOKIE_SAVE_PATH) or os.path.exists(Config.SESSIONS_PATH):
+        return False
     try:
-        cookies = session.cookies.get_dict()
-        with open(Config.COOKIE_SAVE_PATH, "w", encoding="utf-8") as f:
-            json.dump(cookies, f, ensure_ascii=False)
-        return {"status": True, "data": cookies}
+        with open(Config.COOKIE_SAVE_PATH, "r", encoding="utf-8") as f:
+            cookies = json.load(f)
+        sessions_data = {"current": "default", "sessions": {}}
+        cookie_str = json.dumps(cookies, ensure_ascii=False)
+        sessions_data["sessions"]["default"] = base64.b64encode(
+            cookie_str.encode("utf-8")
+        ).decode("utf-8")
+        with open(Config.SESSIONS_PATH, "w", encoding="utf-8") as f:
+            json.dump(sessions_data, f, ensure_ascii=False, indent=2)
+        os.remove(Config.COOKIE_SAVE_PATH)
+        return True
+    except Exception:
+        return False
+
+
+def _get_sessions() -> dict:
+    """获取完整会话数据（已解码）"""
+    if not os.path.exists(Config.SESSIONS_PATH):
+        _migrate_old_cookie()
+    if not os.path.exists(Config.SESSIONS_PATH):
+        return {"current": None, "sessions": {}}
+    try:
+        with open(Config.SESSIONS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # Base64 解码每个会话的 Cookie
+        for user in list(data.get("sessions", {}).keys()):
+            try:
+                raw = data["sessions"][user]
+                if isinstance(raw, str):
+                    cookie_str = base64.b64decode(raw).decode("utf-8")
+                    data["sessions"][user] = json.loads(cookie_str)
+            except Exception:
+                data["sessions"][user] = {}
+        return data
+    except Exception:
+        return {"current": None, "sessions": {}}
+
+
+def _save_sessions(data: dict) -> bool:
+    """将会话数据 Base64 编码后持久化"""
+    encoded = {"current": data.get("current"), "sessions": {}}
+    for user in data.get("sessions", {}):
+        cookie_str = json.dumps(data["sessions"][user], ensure_ascii=False)
+        encoded["sessions"][user] = base64.b64encode(
+            cookie_str.encode("utf-8")
+        ).decode("utf-8")
+    try:
+        with open(Config.SESSIONS_PATH, "w", encoding="utf-8") as f:
+            json.dump(encoded, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def save_cookie(session: requests.Session, username: str = None) -> dict:
+    """将会话 Cookie 持久化（新版：存入多用户会话文件，Base64 编码）"""
+    if not username:
+        data = _get_sessions()
+        username = data.get("current") or "default"
+    else:
+        data = _get_sessions()
+    try:
+        data.setdefault("sessions", {})[username] = session.cookies.get_dict()
+        data["current"] = username
+        _save_sessions(data)
+        return {"status": True, "data": session.cookies.get_dict()}
     except Exception as e:
         return {"status": False, "msg": str(e)}
 
 
-def load_cookie() -> requests.Session | None:
-    """从本地文件加载 Cookie，返回 Session 或 None"""
-    if not os.path.exists(Config.COOKIE_SAVE_PATH):
+def load_cookie(username: str = None) -> requests.Session | None:
+    """
+    从多用户会话文件加载 Cookie，返回 Session 或 None
+    参数：
+        username: 指定用户，None 则加载当前用户
+    """
+    data = _get_sessions()
+    if not username:
+        username = data.get("current")
+    if not username or username not in data.get("sessions", {}):
+        return None
+    cookie_dict = data["sessions"][username]
+    if not cookie_dict:
         return None
     try:
         session = requests.Session()
-        with open(Config.COOKIE_SAVE_PATH, "r", encoding="utf-8") as f:
-            cookies = json.load(f)
-        for k, v in cookies.items():
+        for k, v in cookie_dict.items():
             session.cookies.set(k, v)
         refresh_c3vk(session)
         return session
@@ -118,19 +193,91 @@ def load_cookie() -> requests.Session | None:
         return None
 
 
-def clear_cookie() -> dict:
-    """清除本地保存的 Cookie 文件"""
-    try:
-        if os.path.exists(Config.COOKIE_SAVE_PATH):
-            os.remove(Config.COOKIE_SAVE_PATH)
-        return {"status": True, "msg": "Cookie 已清除"}
-    except Exception as e:
-        return {"status": False, "msg": f"清除失败：{str(e)}"}
+def clear_cookie(username: str = None) -> dict:
+    """
+    清除指定用户的 Cookie
+    参数：
+        username: 指定用户，None 则清除当前用户
+    返回操作结果
+    """
+    data = _get_sessions()
+    if username:
+        if username not in data.get("sessions", {}):
+            return {"status": False, "msg": f"未找到用户 {username} 的会话"}
+        del data["sessions"][username]
+        if data.get("current") == username:
+            users = list(data["sessions"].keys())
+            data["current"] = users[0] if users else None
+        _save_sessions(data)
+        return {"status": True, "msg": f"已清除用户 {username} 的 Cookie"}
+    # 清除当前用户
+    current = data.get("current")
+    if not current or current not in data.get("sessions", {}):
+        return {"status": False, "msg": "没有已登录的会话"}
+    del data["sessions"][current]
+    users = list(data["sessions"].keys())
+    data["current"] = users[0] if users else None
+    _save_sessions(data)
+    return {"status": True, "msg": f"已清除用户 {current} 的 Cookie"}
 
 
 def is_logged_in() -> bool:
-    """检查是否已登录（本地是否有 Cookie 文件）"""
+    """检查当前用户是否已登录（多用户会话文件中有当前用户有效 Cookie）"""
     return load_cookie() is not None
+
+
+# ==============================================
+# 【模块4.5：会话查询与切换】
+# ==============================================
+
+def get_current_user() -> str | None:
+    """获取当前登录用户名"""
+    data = _get_sessions()
+    current = data.get("current")
+    if current and current in data.get("sessions", {}):
+        return current
+    # 如果 current 无效，尝试返回第一个
+    users = list(data.get("sessions", {}).keys())
+    return users[0] if users else None
+
+
+def list_sessions() -> list[str]:
+    """列出所有已保存会话的用户名"""
+    data = _get_sessions()
+    return list(data.get("sessions", {}).keys())
+
+
+def get_session_users() -> list[dict]:
+    """获取所有会话详情（含当前标记）"""
+    data = _get_sessions()
+    current = data.get("current", "")
+    return [
+        {"username": user, "current": user == current}
+        for user in data.get("sessions", {})
+    ]
+
+
+def switch_session(username: str) -> dict:
+    """切换当前会话"""
+    data = _get_sessions()
+    if username not in data.get("sessions", {}):
+        return {"success": False, "msg": f"未找到会话: {username}"}
+    data["current"] = username
+    _save_sessions(data)
+    return {"success": True, "msg": f"已切换到用户: {username}"}
+
+
+def delete_session(username: str) -> dict:
+    """删除指定会话"""
+    data = _get_sessions()
+    if username not in data.get("sessions", {}):
+        return {"success": False, "msg": f"未找到会话: {username}"}
+    del data["sessions"][username]
+    if data.get("current") == username:
+        users = list(data["sessions"].keys())
+        data["current"] = users[0] if users else None
+    _save_sessions(data)
+    return {"success": True, "msg": f"已删除会话: {username}"}
 
 
 # ==============================================
@@ -224,9 +371,28 @@ def login(user: str, pwd: str) -> dict:
                 login_data["captcha"] = cap_res["code"]
 
         if resp.status_code != 200:
-            return {"code": 400, "msg": "登录失败（账号/密码/验证码错误）"}
+            # 尝试从响应中提取具体错误信息
+            try:
+                err_data = resp.json()
+                err_msg = err_data.get("message") or err_data.get("msg") or err_data.get("error", "")
+                if err_msg:
+                    return {"code": 400, "msg": f"登录失败：{err_msg}"}
+            except Exception:
+                pass
+            # 根据状态码推断
+            if resp.status_code == 400:
+                return {"code": 400, "msg": "登录失败（账号或密码错误）"}
+            elif resp.status_code == 403:
+                return {"code": 400, "msg": "登录失败（验证码错误或请求被拒绝）"}
+            elif resp.status_code == 429:
+                return {"code": 400, "msg": "登录失败（请求过于频繁，请稍后重试）"}
+            return {"code": 400, "msg": f"登录失败（HTTP {resp.status_code}）"}
 
-        save_cookie(session)
+        # 保存到多用户会话系统（Base64 编码）
+        data = _get_sessions()
+        data.setdefault("sessions", {})[user] = session.cookies.get_dict()
+        data["current"] = user
+        _save_sessions(data)
         # 返回前清除密码
         pwd = ""
         return {
@@ -1452,44 +1618,64 @@ def view_judgement() -> dict:
         data = resp.json()
         logs = data.get("logs", [])
 
-        # 按时间分组：同一时间戳合并为一条
+        # 按（时间、权限变更、原因集）分组合并，收集所有受影响的用户
+        # 这样同一秒发生的同种处罚会合并为一条记录
         groups = {}
         for entry in logs:
             user = entry.get("user", {})
             ts = entry.get("time", 0)
             time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
             uid = str(user.get("uid", ""))
+            reason = entry.get("reason", "")
+            added = entry.get("addedPermission", 0)
+            revoked = entry.get("revokedPermission", 0)
 
-            key = (time_str, uid)
-            if key not in groups:
-                groups[key] = {
-                    "uid": uid,
-                    "username": user.get("name", ""),
-                    "color": user.get("color", ""),
+            # 分组键：(时间, added, revoked, 原因)
+            group_key = (time_str, added, revoked, reason)
+            if group_key not in groups:
+                groups[group_key] = {
+                    "users": [],
                     "reasons": [],
                     "added": 0,
                     "revoked": 0,
                     "time": time_str,
                 }
-            groups[key]["reasons"].append(entry.get("reason", ""))
-            groups[key]["added"] |= entry.get("addedPermission", 0)
-            groups[key]["revoked"] |= entry.get("revokedPermission", 0)
-
-        # 标注非处罚（绿色）原因
-        NON_PUNISH_REASONS = {
-            "上传站外图片", "上传站外头像", "上传可站外头像",
-            "题库志愿者轮换", "题库志愿者轮换，感谢贡献",
-            "数学内容审核员轮换", "专区/志愿轮换", "专区/志愿轮换，感谢贡献",
-        }
+            # 去重添加用户
+            if not any(u["uid"] == uid for u in groups[group_key]["users"]):
+                groups[group_key]["users"].append({
+                    "uid": uid,
+                    "username": user.get("name", ""),
+                    "color": user.get("color", ""),
+                })
+            if reason not in groups[group_key]["reasons"]:
+                groups[group_key]["reasons"].append(reason)
+            groups[group_key]["added"] |= added
+            groups[group_key]["revoked"] |= revoked
 
         items = []
-        for k in sorted(groups.keys(), reverse=True):
-            g = groups[k]
+        for key in sorted(groups.keys(), reverse=True):
+            g = groups[key]
             is_punish = (g["added"] != 0 or g["revoked"] != 0)
+
+            # 即使无权限变更，也按原因关键词标注是否为处罚
+            NON_PUNISH_REASONS = {
+                "上传站外图片", "上传站外头像", "上传可站外头像",
+                "题库志愿者轮换", "题库志愿者轮换，感谢贡献",
+                "数学内容审核员轮换", "专区/志愿轮换", "专区/志愿轮换，感谢贡献",
+            }
+            PUNISH_KEYWORDS = ["棕名", "封禁", "违规", "学术不端"]
+
+            has_non_punish = any(r in NON_PUNISH_REASONS for r in g["reasons"])
+            has_punish = any(kw in " ".join(g["reasons"]) for kw in PUNISH_KEYWORDS)
+
+            if has_non_punish and not has_punish:
+                is_punish = False
+            elif has_punish:
+                is_punish = True
+            # else 保持原有 is_punish（基于权限变更）
+
             items.append({
-                "uid": g["uid"],
-                "username": g["username"],
-                "color": g["color"],
+                "users": g["users"],
                 "reasons": g["reasons"],
                 "added": g["added"],
                 "revoked": g["revoked"],
