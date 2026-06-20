@@ -1,4 +1,4 @@
-# LuoguChatNotify
+# LuoguLocalService
 Luogu 本地化服务。
 
 ## 项目简介
