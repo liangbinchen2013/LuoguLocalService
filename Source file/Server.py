@@ -47,7 +47,7 @@ class Config:
     LOGIN_API = "https://www.luogu.com.cn/do-auth/password"
     C3VK_REFRESH_URL = "https://www.luogu.com.cn/images/index/step1.png"
     # OCR配置
-    OCR_API = "https://ocr.lbcoj.top/"
+    OCR_API = "https://lgocr.lbcoj.top/"
     CAPTCHA_PATH = "ocr.jpg"
     # Cookie持久化（旧版，单用户）
     COOKIE_SAVE_PATH = "luogu_cookies.json"

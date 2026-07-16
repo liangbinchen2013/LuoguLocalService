@@ -10,6 +10,7 @@ import os
 import sys
 import re
 import getpass
+import shutil
 
 # LaTeX 转 Unicode 映射
 from latex_unicode import latex_to_unicode
@@ -383,7 +384,7 @@ def cmd_feed(args: list[str]) -> None:
         page += 1
 
 
-def cmd_problem(args: list[str]) -> None:
+def cmd_problem(args: list[str], _quick_mode: bool = False) -> None:
     """查看题目预览"""
     if not args:
         pid = input(f"{Fore.CYAN}题目ID（如 P1000）：{Style.RESET_ALL}").strip().upper()
@@ -449,6 +450,14 @@ def cmd_problem(args: list[str]) -> None:
     hint = content.get("hint", "").strip()
     if hint:
         _render_markdown("说明/提示", hint)
+
+    # 创建代码文件入口（非快速模式时显示）
+    if not _quick_mode:
+        print()
+        c = input(f"  {Fore.CYAN}按 c 创建代码文件并编辑，按回车返回：{Style.RESET_ALL}").strip().lower()
+        if c == "c":
+            cmd_create([pid])
+            return
 
 
 def cmd_discuss(args: list[str]) -> None:
@@ -872,12 +881,12 @@ def cmd_problems(args: list[str]) -> None:
         if not has_more:
             print_success(f"共 {total_count} 题，已显示 {total}")
             choice = input(
-                f"{Fore.CYAN}输入数字(#1~#{total})查看题目，回车结束：{Style.RESET_ALL}"
+                f"{Fore.CYAN}输入数字(#1~#{total})查看题目 | e+数字创建代码 | 回车结束：{Style.RESET_ALL}"
             ).strip()
         else:
             print_info(f"第 {page}/{max_pages} 页 · 共 {total_count} 题")
             choice = input(
-                f"{Fore.CYAN}y下一页 | 数字查看题目 | 回车结束：{Style.RESET_ALL}"
+                f"{Fore.CYAN}y下一页 | 数字查看题目 | e+数字创建代码 | 回车结束：{Style.RESET_ALL}"
             ).strip().lower()
 
         if not choice:
@@ -885,6 +894,19 @@ def cmd_problems(args: list[str]) -> None:
         if choice == 'y' and has_more:
             page += 1
             continue
+        if choice.startswith('e'):
+            try:
+                idx = int(choice[1:])
+                if 1 <= idx <= total:
+                    pid = all_items[idx - 1]["pid"]
+                    cmd_create([str(pid)])
+                    continue
+                else:
+                    print_error(f"序号超出范围（应为 1-{total}）")
+                    continue
+            except ValueError:
+                print_error("无效输入，e 后应跟数字")
+                continue
         try:
             idx = int(choice)
             if 1 <= idx <= total:
@@ -953,16 +975,33 @@ def cmd_search(args: list[str]) -> None:
 
         if page >= max_pages or len(items) == 0:
             print_success(f"共找到 {total_count} 题，已显示 {total}")
-            choice = input(f"{Fore.CYAN}输入数字(#1~#{total})查看题目，回车结束：{Style.RESET_ALL}").strip()
+            choice = input(
+                f"{Fore.CYAN}输入数字(#1~#{total})查看题目 | e+数字创建代码 | 回车结束：{Style.RESET_ALL}"
+            ).strip()
         else:
             print_info(f"第 {page}/{max_pages} 页 · 共 {total_count} 题")
-            choice = input(f"{Fore.CYAN}y下一页 | 数字查看题目 | 回车结束：{Style.RESET_ALL}").strip().lower()
+            choice = input(
+                f"{Fore.CYAN}y下一页 | 数字查看题目 | e+数字创建代码 | 回车结束：{Style.RESET_ALL}"
+            ).strip().lower()
 
         if not choice:
             break
         if choice == 'y':
             page += 1
             continue
+        if choice.startswith('e'):
+            try:
+                idx = int(choice[1:])
+                if 1 <= idx <= total:
+                    pid = all_items[idx - 1]["pid"]
+                    cmd_create([str(pid)])
+                    continue
+                else:
+                    print_error(f"序号超出范围（应为 1-{total}）")
+                    continue
+            except ValueError:
+                print_error("无效输入，e 后应跟数字")
+                continue
         try:
             idx = int(choice)
             if 1 <= idx <= total:
@@ -1125,6 +1164,172 @@ def cmd_verbose(args: list[str]) -> None:
     print_success(f"详细日志已{status}")
     if Server.VERBOSE:
         print_info("现在会显示请求 URL 和响应摘要")
+
+
+# ==============================================
+# 代码文件创建功能 (create 命令)
+# ==============================================
+
+def _check_nano() -> bool:
+    """检查是否有可用的终端编辑器（Git Bash nano | edit.exe | 系统 nano）"""
+    if shutil.which("nano"):
+        return True
+    if sys.platform == "win32" and shutil.which("edit"):
+        return True
+    return False
+
+
+def _install_nano() -> bool:
+    """自动安装编辑器（优先级：Microsoft.Edit → GNU.Nano 2.8）"""
+    # 1) 先试 Microsoft.Edit（Win11 25H2+ 自带，低版本需安装）
+    if sys.platform == "win32" and not shutil.which("edit"):
+        print_info("正在通过 winget 安装 Microsoft.Edit...")
+        ret = os.system("winget install Microsoft.Edit --accept-source-agreements 2>nul")
+        if ret == 0 and shutil.which("edit"):
+            print_success("Microsoft.Edit 安装成功")
+            return True
+        print_warning("Microsoft.Edit 安装失败")
+
+    # 2) 兜底安装 GNU.Nano
+    if not shutil.which("nano"):
+        print_info("正在通过 winget 安装 GNU.Nano 2.8...")
+        ret = os.system("winget install GNU.Nano --accept-source-agreements 2>nul")
+        if ret == 0:
+            print_success("nano 2.8 安装成功")
+            return True
+        print_warning("GNU.Nano 安装失败")
+
+    return False
+
+
+def _generate_cpp_template() -> str:
+    """生成通用 C++ 代码模板"""
+    lines = []
+    lines.append("#include <bits/stdc++.h>")
+    lines.append("using namespace std;")
+    lines.append("")
+    lines.append("int main() {")
+    lines.append("    ios::sync_with_stdio(false);")
+    lines.append("    cin.tie(nullptr);")
+    lines.append("")
+    lines.append("    return 0;")
+    lines.append("}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def _open_in_nano(filepath: str) -> None:
+    """在新窗口中打开编辑器（优先级：Git nano → edit.exe → 系统 nano → 记事本）"""
+    abs_path = os.path.abspath(filepath)
+    filename = os.path.basename(abs_path)
+
+    git_nano = r"C:\Program Files\Git\usr\bin\nano.exe"
+    bash_path = r"C:\Program Files\Git\bin\bash.exe"
+    has_git_nano = os.path.exists(git_nano) and os.path.exists(bash_path)
+
+    if sys.platform != "win32":
+        # Linux/Mac → 当前终端运行 nano
+        print_info("正在当前终端中打开 nano...")
+        os.system(f'nano "{abs_path}"')
+        return
+
+    # --- Windows 以下 ---
+
+    # 优先级 1: Git Bash nano 8.7（已有，无需安装）
+    if has_git_nano:
+        safe_path = abs_path.replace("\\", "/")
+        title = f"nano - {filename}"
+        inner = f'nano "{safe_path}"; echo; read -p "按回车关闭此窗口..."'
+        os.system(f'start "{title}" "{bash_path}" --login -c \'{inner}\'')
+        print_success("nano 8.7 已在新的窗口中启动")
+        return
+
+    # 优先级 2: edit.exe（已存在或刚通过 Microsoft.Edit 安装）
+    if shutil.which("edit"):
+        title = f"edit - {filename}"
+        os.system(f'start "{title}" edit "{abs_path}"')
+        print_success("edit.exe 已在新的窗口中启动")
+        return
+
+    # 优先级 3: 系统 nano（可能刚通过 GNU.Nano 安装）
+    if shutil.which("nano"):
+        title = f"nano - {filename}"
+        os.system(f'start "{title}" nano "{abs_path}"')
+        print_success("nano 已在新的窗口中启动")
+        return
+
+    # 兜底：系统记事本
+    title = f"notepad - {filename}"
+    os.system(f'start "{title}" notepad "{abs_path}"')
+    print_success("记事本已打开")
+
+
+def cmd_create(args: list[str]) -> None:
+    """创建 C++ 代码文件并用 nano 编辑"""
+    print_header("创建 C++ 代码文件")
+
+    # 1. 确定文件名
+    filename = ""
+    if args:
+        first = args[0]
+        # 检测是否是 PID（如 P1000）
+        if re.match(r'^[A-Za-z]\d+$', first):
+            filename = first.upper() + ".cpp"
+        else:
+            filename = first
+
+    if not filename:
+        filename = input("  文件名（留空默认 template.cpp）：").strip()
+
+    if not filename:
+        filename = "template.cpp"
+    elif not filename.endswith(".cpp"):
+        filename += ".cpp"
+
+    # 2. 可选：关联题目（在源窗口显示题目，nano 只使用通用模板）
+    choice = input("  是否关联题目？(y/n, 默认n)：").strip().lower()
+    if choice == "y":
+        pid = input("  题目 ID（如 P1000）：").strip().upper()
+        if re.match(r'^[A-Z]\d+$', pid):
+            print_info(f"正在显示题目 {pid}...")
+            # 在源窗口调用 cmd_problem 完整显示题目（快速模式，不自带创建提示）
+            cmd_problem([pid], _quick_mode=True)
+            # 用 PID 作为文件名
+            filename = f"{pid}.cpp"
+            print_success(f"已关联题目 {pid}")
+        else:
+            print_warning("无效的题目 ID，跳过关联")
+
+    # 3. 创建文件
+    filepath = os.path.join(os.getcwd(), filename)
+    if os.path.exists(filepath):
+        overwrite = input(
+            f"  文件 {filename} 已存在，是否覆盖？(y/n, 默认n)："
+        ).strip().lower()
+        if overwrite != "y":
+            print_info("操作已取消")
+            return
+
+    template = _generate_cpp_template()
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(template)
+        print_success(f"文件 {filename} 已创建")
+    except Exception as e:
+        print_error(f"创建文件失败：{e}")
+        return
+
+    # 4. 检查编辑器并打开（自动降级：Git nano → edit.exe → 系统 nano → 记事本）
+    if not _check_nano():
+        print_warning("未检测到终端编辑器")
+        install = input("  是否自动安装编辑器？(y/n, 默认y)：").strip().lower()
+        if install != "n":
+            _install_nano()
+        else:
+            print_info("跳过安装")
+    # 无论安装是否成功，都尝试打开（最差也有记事本兜底）
+    _open_in_nano(filepath)
 
 
 def cmd_color(args: list[str]) -> None:
@@ -1386,6 +1591,7 @@ COMMANDS: dict[str, tuple[str, callable]] = {
     "judgement":("陶片放逐（处罚日志）", cmd_judgement),
     "note":     ("管理用户备注", cmd_note),
     "color":    ("管理用户自定义颜色", cmd_color),
+    "create":   ("创建C++代码文件并用nano编辑", cmd_create),
     "verbose":  ("切换详细日志", cmd_verbose),
     "sessions": ("列出所有已保存的会话", cmd_sessions),
     "switch":   ("切换当前用户", cmd_switch),
@@ -1397,6 +1603,8 @@ COMMANDS: dict[str, tuple[str, callable]] = {
 
 ALIASES = {
     "cls": "help",
+    "new": "create",
+    "ed": "create",
     "clear": "help",
     "？": "help",
     "h": "help",
